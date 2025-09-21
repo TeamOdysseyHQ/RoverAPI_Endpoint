@@ -7,11 +7,14 @@ def create_app():
     from .api.test import bp as test_bp
     from .api.logs import bp as logs_bp
     from .api.doctor import bp as doctor_bp
+    from app.api.random import random_bp
 
     # Register blueprints
     app.register_blueprint(root_bp)
     app.register_blueprint(test_bp, url_prefix="/api")
     app.register_blueprint(logs_bp, url_prefix="/api")
     app.register_blueprint(doctor_bp, url_prefix="/api")
+    app.register_blueprint(random_bp)
 
     return app
+
