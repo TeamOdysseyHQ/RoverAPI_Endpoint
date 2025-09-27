@@ -5,7 +5,7 @@ from app.py_types import *
 
 bp = Blueprint("doctor", __name__)
 
-@bp.route("/ros2/doctor", methods=["POST"])
+@bp.route("/doctor", methods=["POST"])
 def ros2_doctor():
     try:
         completed = subprocess.run(

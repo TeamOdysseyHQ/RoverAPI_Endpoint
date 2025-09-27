@@ -701,7 +701,7 @@ def generate_report():
     
     return jsonify(result)
 
-@bp.route("/export_data", methods=["GET"])
+@bp.route("/export_data", methods=["POST"])
 def export_data():
     """Export mission data"""
     mission_id = request.args.get('mission_id')
@@ -746,7 +746,7 @@ def export_data():
     
     return jsonify(export_data)
 
-@bp.route("/reports", methods=["GET"])
+@bp.route("/reports", methods=["POST"])
 def list_reports():
     """List reports"""
     reports = []
@@ -782,7 +782,7 @@ def download_report(filename):
     
     return send_file(filepath, as_attachment=True)
 
-@bp.route("/route_analysis", methods=["GET"])
+@bp.route("/route_analysis", methods=["POST"])
 def get_route_analysis():
     """Get route analysis"""
     mission_id = request.args.get('mission_id', 'default')

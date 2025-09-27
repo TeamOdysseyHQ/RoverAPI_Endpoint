@@ -1,87 +1,29 @@
-# Rover API - Mission Data Capture and Report Generation
+# RoverAPI Endpoint
+This repository is the API endpoint primarily for the rover's onboard computer. This document will brief you about accessing, contributing and utilizing this repository.
 
-A comprehensive Flask-based API system for rover mission data capture, analysis, and report generation.
+## Reading/Accessing/Using
+Always perform POST requests to specific endpoints. All supported endpoints will be provided by the *available* endpoint.
 
-## Features
+### End points
+* **/api/nav/**: Backend endpoint(s) for navigation subsystem
+* **/api/dgt/**: Backend endpoint(s) for diagnostics
+* **/api/sci/**: Backend endpoint(s) for science subsystem
+* **/api/arm/**: Backend endpoint(s) for arm subsystem
+* **/api/o/**: Additional endpoint(s) provided
 
-### 1. Camera Data Capture
-- Screenshot capture with comprehensive metadata
-- GPS coordinates, altitude, and heading tracking
-- Battery level and environmental monitoring
-- Motion data (speed, direction)
-- Mission and rover ID tracking
+## Developer/Contributor documentation
 
-### 2. Mission Documentation
-- Route analysis with distance and speed calculations
-- PDF report generation with embedded images
-- Interactive HTML maps with waypoints
-- Waypoint management with coordinates
-- Data export in JSON format
+Some general guidelines:
+* Do not write/support *GET* requests for backend unless its required (eg: downloads).
+* Type annotations are always better to be provided. Support complex type annotation by adding them to [types files](app/py_types.py) which contains an example.
+* Always update available.py files if any new endpoint is added
+* Follow the directory structure and update the [main server script](app/__init__.py)
+* Provide minimum amount of comments to explain ***why your code exists*** rather than **how it works**. Its easy to understand that certain part of code is a loop as opposed to understanding why we need the loop.
 
-## Quick Start
-
-### Installation
-```bash
-pip install -r requirements.txt
-```
-
-### Usage
-
-#### Start the API Server
-```bash
-python main.py
-```
-Server runs on `http://localhost:8080`
-
-#### Capture Rover Data
-```bash
-python capture_rover_data.py
-```
-
-#### Generate Mission Report
-```bash
-python generate_mission_report.py
-```
-
-## API Endpoints
-
-- `POST /api/camera/capture` - Capture image with metadata
-- `POST /api/camera/waypoint` - Add waypoint
-- `POST /api/camera/waypoint/auto` - Auto-add waypoint
-- `GET /api/camera/waypoints` - Get all waypoints
-- `GET /api/camera/metadata` - Get all metadata
-- `POST /api/report/generate_report` - Generate mission report
-- `GET /api/report/export_data` - Export mission data
-- `GET /api/report/route_analysis` - Get route statistics
-
-## Project Structure
-
-```
-RoverAPI_Endpoint-master/
-├── main.py                    # Flask server entry point
-├── capture_rover_data.py      # Data capture script
-├── generate_mission_report.py # Report generation script
-├── test_api.py               # API testing script
-├── requirements.txt          # Dependencies
-├── app/
-│   ├── api/
-│   │   ├── camera.py         # Camera capture endpoints
-│   │   ├── report.py         # Report generation
-│   │   └── root.py          # Health check
-│   └── py_types.py          # Type definitions
-└── storage/
-    ├── images/              # Captured images
-    └── reports/             # Generated reports
-```
-
-## Dependencies
-
-- Flask >= 3.1.1
-- Folium >= 0.20.0
-- ReportLab >= 4.0.0
-- Pillow >= 10.0.0
-- Werkzeug >= 3.0.0
-
-## License
-
-MIT License
+### Directory Structure
+Most directory names are self explanatory but here is a quick reference,
+* [Arm Directory](app/api/arm/): Backend Files for the arm subsystem.
+* [Diagnostics Directory](app/api/diagnostics/): Backend Files for running diagnostics/check-ups on rover.
+* [Navigation Directory](app/api/navigation/): Backend Files for the navigation subsystem and most of scouting modules.
+* [Science Directory](app/api/science/): Backend Files for the science subsystem and any analytical modules.
+* [Others Directory](app/api/others/): Additional endpoints for debugging, logging etc.

@@ -13,17 +13,20 @@ os.makedirs(IMAGE_DIR, exist_ok=True)
 os.makedirs("storage/reports", exist_ok=True)
 
 def load_json(path):
+
     if os.path.exists(path):
         with open(path, "r") as f:
             return json.load(f)
     return []
 
 def save_json(path, data):
+
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 @bp.route("/capture", methods=["POST"])
 def capture():
+
     """Capture camera screenshot with metadata"""
     if 'image' not in request.files:
         return jsonify({"error": "No image file provided"}), 400
@@ -33,6 +36,7 @@ def capture():
         return jsonify({"error": "No image selected"}), 400
     
     try:
+
         latitude = float(request.form.get('latitude', 0))
         longitude = float(request.form.get('longitude', 0))
         altitude = float(request.form.get('altitude', 0))
@@ -41,12 +45,14 @@ def capture():
         battery_level = float(request.form.get('battery_level', 100))
         temperature = float(request.form.get('temperature', 20))
         humidity = float(request.form.get('humidity', 50))
+
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid numeric parameter"}), 400
     
     note = request.form.get('note', '')
     mission_id = request.form.get('mission_id', 'default')
     rover_id = request.form.get('rover_id', 'rover_001')
+    
     camera_settings = request.form.get('camera_settings', '{}')
     
     try:
@@ -104,26 +110,37 @@ def capture():
 
 @bp.route("/waypoint", methods=["POST"])
 def add_waypoint():
-    """Add waypoint with coordinates"""
+    """Add a waypoint (manual or auto). If 'name' is provided, it's manual; otherwise auto-generated."""
     try:
-        name = request.form.get('name')
-        if not name:
-            return jsonify({"error": "Waypoint name is required"}), 400
-            
+        # Common parameters
         latitude = float(request.form.get('latitude', 0))
         longitude = float(request.form.get('longitude', 0))
         altitude = float(request.form.get('altitude', 0))
-        
-        category = request.form.get('category', 'general')
-        description = request.form.get('description', '')
         mission_id = request.form.get('mission_id', 'default')
         rover_id = request.form.get('rover_id', 'rover_001')
-        auto_generated = request.form.get('auto_generated', 'false').lower() == 'true'
-        
+
+        waypoints = load_json(WAYPOINT_FILE)
+
+        name = request.form.get('name')
+        auto_generated = False
+
+        if not name:
+            # Auto-generate name
+            waypoint_count = len([wp for wp in waypoints if wp.get('mission_id') == mission_id])
+            name = f"Auto Waypoint {waypoint_count + 1}"
+            auto_generated = True
+            category = "auto"
+            description = f"Automatically generated waypoint during {mission_id}"
+        else:
+            # Manual waypoint
+            category = request.form.get('category', 'general')
+            description = request.form.get('description', '')
+            auto_generated = request.form.get('auto_generated', 'false').lower() == 'true'
+
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid numeric parameter"}), 400
-    
-    waypoints = load_json(WAYPOINT_FILE)
+
+    # Create waypoint entry
     entry = {
         "name": name,
         "location": {
@@ -140,51 +157,16 @@ def add_waypoint():
         "timestamp_readable": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
         "waypoint_id": f"wp_{len(waypoints) + 1:03d}"
     }
+
     waypoints.append(entry)
     save_json(WAYPOINT_FILE, waypoints)
-    
+
     return jsonify({"status": "ok", "waypoint": entry})
 
-@bp.route("/waypoint/auto", methods=["POST"])
-def auto_add_waypoint():
-    """Auto-add waypoint at current position"""
-    try:
-        latitude = float(request.form.get('latitude', 0))
-        longitude = float(request.form.get('longitude', 0))
-        altitude = float(request.form.get('altitude', 0))
-        mission_id = request.form.get('mission_id', 'default')
-        rover_id = request.form.get('rover_id', 'rover_001')
-        
-        waypoints = load_json(WAYPOINT_FILE)
-        waypoint_count = len([wp for wp in waypoints if wp.get('mission_id') == mission_id])
-        name = f"Auto Waypoint {waypoint_count + 1}"
-        
-        entry = {
-            "name": name,
-            "location": {
-                "latitude": latitude,
-                "longitude": longitude,
-                "altitude": altitude
-            },
-            "category": "auto",
-            "description": f"Automatically generated waypoint during {mission_id}",
-            "mission_id": mission_id,
-            "rover_id": rover_id,
-            "auto_generated": True,
-            "timestamp": datetime.utcnow().isoformat(),
-            "timestamp_readable": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-            "waypoint_id": f"wp_{len(waypoints) + 1:03d}"
-        }
-        waypoints.append(entry)
-        save_json(WAYPOINT_FILE, waypoints)
-        
-        return jsonify({"status": "ok", "waypoint": entry})
-        
-    except (TypeError, ValueError):
-        return jsonify({"error": "Invalid latitude or longitude"}), 400
 
-@bp.route("/waypoints", methods=["GET"])
+@bp.route("/get_waypoints", methods=["GET"])
 def get_waypoints():
+
     """Get waypoints"""
     mission_id = request.args.get('mission_id')
     waypoints = load_json(WAYPOINT_FILE)
@@ -198,8 +180,9 @@ def get_waypoints():
         "count": len(waypoints)
     })
 
-@bp.route("/metadata", methods=["GET"])
+@bp.route("/get_metadata", methods=["GET"])
 def get_metadata():
+
     """Get image metadata"""
     mission_id = request.args.get('mission_id')
     metadata = load_json(META_FILE)
