@@ -14,6 +14,7 @@ Always perform POST requests to specific endpoints. All supported endpoints will
 ## Developer/Contributor documentation
 
 Some general guidelines:
+* **Always fork the repository and make a pull request**
 * Do not write/support *GET* requests for backend unless its required (eg: downloads).
 * Type annotations are always better to be provided. Support complex type annotation by adding them to [types files](app/py_types.py) which contains an example.
 * Always update available.py files if any new endpoint is added
@@ -26,4 +27,5 @@ Most directory names are self explanatory but here is a quick reference,
 * [Diagnostics Directory](app/api/diagnostics/): Backend Files for running diagnostics/check-ups on rover.
 * [Navigation Directory](app/api/navigation/): Backend Files for the navigation subsystem and most of scouting modules.
 * [Science Directory](app/api/science/): Backend Files for the science subsystem and any analytical modules.
+
 * [Others Directory](app/api/others/): Additional endpoints for debugging, logging etc.
