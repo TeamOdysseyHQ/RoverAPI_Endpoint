@@ -1,19 +1,14 @@
-from flask import Blueprint, request, jsonify
+from fastapi import APIRouter, Request
 
-bp = Blueprint("test", __name__)
+router = APIRouter()
 
-@bp.route("/test", methods=["POST"])
-def api_test_point():
-    if request.method != "POST":
-        return jsonify({
-            "message": f"Invalid Request: {request.method}. Not allowed!",
-            "status": "Failed",
-            "success": False
-        }), 405
-
-    return jsonify({
+@router.post("/test")
+async def api_test_point(request: Request):
+    data = await request.json() if request.headers.get("content-type") == "application/json" else None
+    
+    return {
         "success": True,
         "status": "Success",
         "message": "The POST Request was successfully validated. Check the data we received.",
-        "data": request.get_json(silent=True)
-    }), 200
+        "data": data
+    }

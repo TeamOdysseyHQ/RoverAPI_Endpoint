@@ -1,6 +1,28 @@
 # RoverAPI Endpoint
 This repository is the API endpoint primarily for the rover's onboard computer. This document will brief you about accessing, contributing and utilizing this repository.
 
+# Setup
+Use uv for dependency management.
+
+Initial setup command:
+```sh
+uv sync
+```
+
+Deploy server with:
+```sh
+uv run flask run main.py
+```
+
+
+Expose the port over the entire network for other machines to connect to:
+```sh
+uv run flask run --host=0.0.0.0 main.py
+```
+
+For the dashboard devs, use the URL `http://<IP-Addr>:6767/<endpoint>`
+
+
 ## Reading/Accessing/Using
 Always perform POST requests to specific endpoints. All supported endpoints will be provided by the *available* endpoint.
 

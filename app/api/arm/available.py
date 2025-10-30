@@ -1,7 +1,7 @@
-from flask import Blueprint, request, jsonify
+from fastapi import APIRouter
 from app.py_types import listOfStrings
 
-bp = Blueprint("arm_avail", __name__)
+router = APIRouter()
 
 def arm_avi_l_ret() -> listOfStrings:
     
@@ -10,17 +10,10 @@ def arm_avi_l_ret() -> listOfStrings:
         "available"
     ]
 
-@bp.route("/available", methods=["POST"])
-def arm_avi():
-    if request.method != "POST":
-        return jsonify({
-            "message": f"Invalid Request: {request.method}. Not allowed!",
-            "status": "Failed",
-            "success": False
-        }), 405
-
-    return jsonify({
+@router.post("/available")
+async def arm_avi():
+    return {
         "success": True,
         "status": "Success",
         "endpoints": arm_avi_l_ret()
-    }), 200
+    }

@@ -1,7 +1,7 @@
-from flask import Blueprint, request, jsonify
+from fastapi import APIRouter, HTTPException
 from app.py_types import listOfStrings
 
-bp = Blueprint("nav_avail", __name__)
+router = APIRouter()
 
 def nav_avi_l_ret() -> listOfStrings:
     
@@ -11,17 +11,10 @@ def nav_avi_l_ret() -> listOfStrings:
         "export_data", "reports", "route_analysis", "download/<filename>"
     ]
 
-@bp.route("/available", methods=["POST"])
-def nav_avi():
-    if request.method != "POST":
-        return jsonify({
-            "message": f"Invalid Request: {request.method}. Not allowed!",
-            "status": "Failed",
-            "success": False
-        }), 405
-
-    return jsonify({
+@router.post("/available")
+async def nav_avi():
+    return {
         "success": True,
         "status": "Success",
         "endpoints": nav_avi_l_ret()
-    }), 200
+    }

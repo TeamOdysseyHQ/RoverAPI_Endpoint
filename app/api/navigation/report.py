@@ -1,4 +1,5 @@
-from flask import Blueprint, jsonify, send_file
+from fastapi import APIRouter, Query, Response
+from fastapi.responses import FileResponse, HTMLResponse
 from datetime import datetime
 import os, json, folium, math
 from typing import List, Dict, Tuple
@@ -15,7 +16,7 @@ try:
 except ImportError:
     PDF_AVAILABLE = False
 
-bp = Blueprint("report", __name__)
+router = APIRouter()
 
 META_FILE = "storage/metadata.json"
 WAYPOINT_FILE = "storage/waypoints.json"
@@ -350,16 +351,14 @@ def generate_pdf_with_images(metadata, waypoints, route_analysis, timestamp, mis
     except Exception as e:
         return None, str(e)
 
-@bp.route("/generate_report", methods=["POST"])
-def generate_report():
+@router.post("/generate_report")
+async def generate_report(mission_id: str = Query('default')):
     """Generate mission report"""
     metadata = load_json(META_FILE)
     waypoints = load_json(WAYPOINT_FILE)
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     report_html = os.path.join(REPORT_DIR, f"report_{timestamp}.html")
     report_pdf = os.path.join(REPORT_DIR, f"report_{timestamp}.pdf")
-    
-    mission_id = request.form.get('mission_id', 'default') if hasattr(request, 'form') else 'default'
     
     if mission_id != 'default':
         metadata = [md for md in metadata if md.get('rover_status', {}).get('mission_id') == mission_id]
@@ -699,13 +698,12 @@ def generate_report():
     else:
         result["pdf_warning"] = "PDF generation not available - pdfkit not installed or wkhtmltopdf missing"
     
-    return jsonify(result)
+    return result
 
-@bp.route("/export_data", methods=["POST"])
-def export_data():
+@router.post("/export_data")
+async def export_data(mission_id: str = Query(None), format: str = Query('json')):
     """Export mission data"""
-    mission_id = request.args.get('mission_id')
-    export_format = request.args.get('format', 'json')
+    export_format = format
     
     metadata = load_json(META_FILE)
     waypoints = load_json(WAYPOINT_FILE)
@@ -714,7 +712,7 @@ def export_data():
         metadata = [md for md in metadata if md.get('rover_status', {}).get('mission_id') == mission_id]
         waypoints = [wp for wp in waypoints if wp.get('mission_id') == mission_id]
     
-    export_data = {
+    data_export = {
         "mission_id": mission_id or "all_missions",
         "export_timestamp": datetime.utcnow().isoformat(),
         "metadata": metadata,
@@ -742,12 +740,12 @@ def export_data():
                 lat, lon = md['latitude'], md['longitude']
             csv_data += f"photo,{lat},{lon},{md.get('timestamp', '')},{md.get('note', '')}\n"
         
-        return csv_data, 200, {'Content-Type': 'text/csv'}
+        return Response(content=csv_data, media_type='text/csv')
     
-    return jsonify(export_data)
+    return data_export
 
-@bp.route("/reports", methods=["POST"])
-def list_reports():
+@router.post("/reports")
+async def list_reports():
     """List reports"""
     reports = []
     for filename in os.listdir(REPORT_DIR):
@@ -764,28 +762,29 @@ def list_reports():
     
     reports.sort(key=lambda x: x['created'], reverse=True)
     
-    return jsonify({
+    return {
         "status": "ok",
         "reports": reports,
         "count": len(reports)
-    })
+    }
 
-@bp.route("/download/<filename>", methods=["GET"])
-def download_report(filename):
+@router.get("/download/{filename}")
+async def download_report(filename: str):
     """Download report file"""
+    from fastapi import HTTPException
+    
     if not filename.startswith('report_') or not filename.endswith('.html'):
-        return jsonify({"error": "Invalid filename"}), 400
+        raise HTTPException(status_code=400, detail="Invalid filename")
     
     filepath = os.path.join(REPORT_DIR, filename)
     if not os.path.exists(filepath):
-        return jsonify({"error": "Report not found"}), 404
+        raise HTTPException(status_code=404, detail="Report not found")
     
-    return send_file(filepath, as_attachment=True)
+    return FileResponse(filepath, filename=filename)
 
-@bp.route("/route_analysis", methods=["POST"])
-def get_route_analysis():
+@router.post("/route_analysis")
+async def get_route_analysis(mission_id: str = Query('default')):
     """Get route analysis"""
-    mission_id = request.args.get('mission_id', 'default')
     
     metadata = load_json(META_FILE)
     waypoints = load_json(WAYPOINT_FILE)
@@ -796,8 +795,8 @@ def get_route_analysis():
     
     analysis = generate_route_analysis(metadata, waypoints)
     
-    return jsonify({
+    return {
         "status": "ok",
         "mission_id": mission_id,
         "analysis": analysis
-    })
+    }

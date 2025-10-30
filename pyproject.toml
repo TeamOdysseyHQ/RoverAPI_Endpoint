@@ -1,0 +1,15 @@
+[project]
+name = "roverapi-endpoint"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi[standard]>=0.120.2",
+    "flask>=3.1.1",
+    "folium>=0.20.0",
+    "pillow>=10.0.0",
+    "reportlab>=4.0.0",
+    "typing-extensions>=4.0.0",
+    "werkzeug>=3.0.0",
+]
