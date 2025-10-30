@@ -17,7 +17,7 @@ uv run flask run main.py
 
 Expose the port over the entire network for other machines to connect to:
 ```sh
-uv run flask run --host=0.0.0.0 main.py
+uv run main.py
 ```
 
 For the dashboard devs, use the URL `http://<IP-Addr>:6767/<endpoint>`
