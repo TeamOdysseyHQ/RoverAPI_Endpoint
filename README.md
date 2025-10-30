@@ -9,12 +9,6 @@ Initial setup command:
 uv sync
 ```
 
-Deploy server with:
-```sh
-uv run flask run main.py
-```
-
-
 Expose the port over the entire network for other machines to connect to:
 ```sh
 uv run main.py
