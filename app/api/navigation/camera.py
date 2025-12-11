@@ -183,3 +183,114 @@ async def get_metadata(mission_id: str = Query(None)):
         "metadata": metadata,
         "count": len(metadata)
     }
+
+@router.post("/capture_test_data")
+async def capture_test_data(
+    title: str = Form("Rover Mission Capture"),
+    description: str = Form("Camera feed screenshot with metadata"),
+    latitude: float = Form(37.7749),
+    longitude: float = Form(-122.4194),
+    altitude: float = Form(100.5),
+    heading: float = Form(45.0),
+    speed: float = Form(1.5),
+    battery_level: float = Form(85.0),
+    temperature: float = Form(22.0),
+    humidity: float = Form(50.0),
+    mission_id: str = Form("rover_challenge_mission"),
+    rover_id: str = Form("rover_challenge_001"),
+    note: str = Form("Rover mission data capture")
+):
+    """Generate test rover image with metadata - useful for testing and demos"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PIL not installed. Run: pip install pillow")
+    
+    # Create test image
+    img = Image.new('RGB', (800, 600), color='lightblue')
+    draw = ImageDraw.Draw(img)
+    
+    try:
+        font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+        font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+    except:
+        try:
+            font_large = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 28)
+            font_medium = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 18)
+        except:
+            font_large = ImageFont.load_default()
+            font_medium = ImageFont.load_default()
+    
+    # Add content to image
+    draw.text((30, 30), title, fill='black', font=font_large)
+    draw.text((30, 80), description, fill='darkblue', font=font_medium)
+    draw.text((30, 120), f"Rover Mission - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 
+              fill='gray', font=font_medium)
+    
+    # Add rover visual
+    draw.rectangle([30, 180, 770, 250], outline='black', width=3)
+    draw.text((40, 200), "ROVER MISSION DATA CAPTURED", fill='black', font=font_medium)
+    
+    # Add mission info
+    draw.text((30, 300), f"GPS Coordinates: {latitude}, {longitude}", fill='darkgreen', font=font_medium)
+    draw.text((30, 330), f"Battery Level: {battery_level}%", fill='darkgreen', font=font_medium)
+    draw.text((30, 360), f"Temperature: {temperature}°C", fill='darkgreen', font=font_medium)
+    draw.text((30, 390), f"Mission ID: {mission_id}", fill='darkgreen', font=font_medium)
+    
+    # Border
+    draw.rectangle([10, 10, 790, 590], outline='black', width=4)
+    
+    # Save image
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}_rover_test_capture.jpg"
+    filepath = os.path.join(IMAGE_DIR, filename)
+    img.save(filepath, "JPEG", quality=95)
+    
+    file_size = os.path.getsize(filepath)
+    
+    # Create metadata entry
+    metadata = load_json(META_FILE)
+    entry = {
+        "file": filename,
+        "timestamp": timestamp,
+        "datetime_iso": datetime.utcnow().isoformat(),
+        "location": {
+            "latitude": latitude,
+            "longitude": longitude,
+            "altitude": altitude,
+            "heading": heading
+        },
+        "motion": {
+            "speed": speed,
+            "heading": heading
+        },
+        "environment": {
+            "temperature": temperature,
+            "humidity": humidity
+        },
+        "rover_status": {
+            "battery_level": battery_level,
+            "rover_id": rover_id,
+            "mission_id": mission_id
+        },
+        "camera": {
+            "settings": {"resolution": "800x600", "test_image": True},
+            "file_size_bytes": file_size
+        },
+        "note": note,
+        "tags": ["rover", "test", "generated"]
+    }
+    
+    metadata.append(entry)
+    save_json(META_FILE, metadata)
+    
+    return {
+        "status": "ok",
+        "message": "Test data captured successfully",
+        "saved": filename,
+        "filepath": filepath,
+        "file_size_bytes": file_size,
+        "file_size_kb": round(file_size / 1024, 2),
+        "metadata": entry,
+        "total_captures": len(metadata)
+    }

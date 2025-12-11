@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Rover Data Capture - Save screenshot with metadata
@@ -10,8 +11,8 @@ import json
 from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont
 
-# Add the app directory to the path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'app'))
+# Add the parent directory to the path for app imports
+sys.path.insert(0, os.path.dirname(__file__))
 
 def create_rover_image(filename, title, description):
     """Create a rover mission image"""
@@ -62,7 +63,7 @@ def capture_rover_data():
         os.makedirs("storage/images", exist_ok=True)
         
         # Import API functions
-        from api.camera import load_json, save_json, META_FILE
+        from app.api.navigation.camera import load_json, save_json, META_FILE
         
         # Create sample rover image
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

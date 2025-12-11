@@ -9,8 +9,8 @@ import sys
 import json
 from datetime import datetime, timezone
 
-# Add the app directory to the path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'app'))
+# Add the parent directory to the path for app imports
+sys.path.insert(0, os.path.dirname(__file__))
 
 def generate_mission_report():
     """Generate complete mission report with all features"""
@@ -19,8 +19,8 @@ def generate_mission_report():
     
     try:
         # Import API functions
-        from api.camera import load_json, META_FILE, WAYPOINT_FILE
-        from api.report import generate_route_analysis, generate_pdf_with_images, PDF_AVAILABLE
+        from app.api.navigation.camera import load_json, META_FILE, WAYPOINT_FILE
+        from app.api.navigation.report import generate_route_analysis, generate_pdf_with_images, PDF_AVAILABLE
         
         # Load data
         metadata = load_json(META_FILE)
@@ -61,16 +61,9 @@ def generate_mission_report():
             print(f"   PDF creation failed: {error}")
             return False
         
-        # Generate HTML report with map
-        print("\n3. Creating HTML report with map...")
-        try:
-            from api.report import generate_html_report
-            html_path = generate_html_report(metadata, waypoints, analysis, timestamp, "rover_mission")
-            if html_path:
-                print(f"   HTML report: {html_path}")
-                print(f"   Interactive map included")
-        except Exception as e:
-            print(f"   HTML report failed: {e}")
+        # Note: HTML report generation with interactive map is available via the API endpoint
+        print("\n3. HTML report with map available via API endpoint /api/nav/generate_report")
+        print("   (Use the FastAPI endpoint for full HTML report generation)")
         
         # Export data
         print("\n4. Exporting mission data...")

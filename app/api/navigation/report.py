@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query, Response, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from datetime import datetime
 import os, json, folium, math
@@ -800,3 +800,106 @@ async def get_route_analysis(mission_id: str = Query('default')):
         "mission_id": mission_id,
         "analysis": analysis
     }
+
+@router.post("/generate_comprehensive_report")
+async def generate_comprehensive_report(mission_id: str = Query('default')):
+    """
+    Generate comprehensive mission report with:
+    - Route analysis (distance, speed, duration)
+    - Battery consumption tracking
+    - Environmental conditions analysis
+    - PDF report with embedded images
+    - JSON data export
+    - Statistics and summary
+    """
+    
+    # Load data
+    metadata = load_json(META_FILE)
+    waypoints = load_json(WAYPOINT_FILE)
+    
+    if not metadata:
+        raise HTTPException(
+            status_code=404, 
+            detail="No captured data found. Use /api/nav/capture or /api/nav/capture_test_data first."
+        )
+    
+    # Filter by mission if specified
+    if mission_id != 'default':
+        metadata = [md for md in metadata if md.get('rover_status', {}).get('mission_id') == mission_id]
+        waypoints = [wp for wp in waypoints if wp.get('mission_id') == mission_id]
+    
+    # Generate route analysis
+    analysis = generate_route_analysis(metadata, waypoints)
+    
+    # Generate timestamp for file naming
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    
+    result = {
+        "status": "ok",
+        "message": "Comprehensive mission report generated successfully",
+        "mission_id": mission_id,
+        "timestamp": timestamp,
+        "statistics": {
+            "total_photos": len(metadata),
+            "total_waypoints": len(waypoints),
+            "total_distance_km": analysis['route_stats']['total_distance_km'],
+            "average_speed": analysis['route_stats']['average_speed'],
+            "mission_duration_seconds": analysis['route_stats']['total_time'],
+            "battery_consumed": analysis['battery_analysis'].get('battery_consumed', 0)
+        },
+        "analysis": analysis
+    }
+    
+    # Generate PDF report with embedded images
+    if PDF_AVAILABLE:
+        try:
+            pdf_path, pdf_error = generate_pdf_with_images(metadata, waypoints, analysis, timestamp, mission_id)
+            if pdf_path:
+                file_size = os.path.getsize(pdf_path)
+                result["pdf_report"] = {
+                    "path": pdf_path,
+                    "size_bytes": file_size,
+                    "size_kb": round(file_size / 1024, 2),
+                    "images_embedded": len(metadata),
+                    "waypoints_documented": len(waypoints)
+                }
+            else:
+                result["pdf_error"] = pdf_error
+        except Exception as e:
+            result["pdf_error"] = str(e)
+    else:
+        result["pdf_warning"] = "PDF generation not available - reportlab or PIL not installed"
+    
+    # Export data to JSON
+    try:
+        export_data = {
+            "mission_id": mission_id,
+            "export_timestamp": datetime.utcnow().isoformat(),
+            "metadata": metadata,
+            "waypoints": waypoints,
+            "analysis": analysis,
+            "statistics": result["statistics"]
+        }
+        
+        export_file = os.path.join(REPORT_DIR, f"mission_data_{timestamp}.json")
+        with open(export_file, 'w') as f:
+            json.dump(export_data, f, indent=2)
+        
+        export_size = os.path.getsize(export_file)
+        result["data_export"] = {
+            "path": export_file,
+            "size_bytes": export_size,
+            "size_kb": round(export_size / 1024, 2)
+        }
+    except Exception as e:
+        result["export_error"] = str(e)
+    
+    # Report features summary
+    result["features"] = {
+        "route_traveled": "Complete path analysis with distance and time",
+        "compilation_of_photos": f"All {len(metadata)} images embedded in PDF",
+        "maps": "Interactive HTML map available via /api/nav/generate_report",
+        "waypoints_with_coordinates": f"All {len(waypoints)} GPS points documented"
+    }
+    
+    return result

@@ -7,8 +7,9 @@ def nav_avi_l_ret() -> listOfStrings:
     
     #* Add all endpoints here without fail.
     return [
-        "report", "available", "capture", "waypoint", "get_waypoints", "get_metadata", "generate_report",
-        "export_data", "reports", "route_analysis", "download/<filename>"
+        "available", "capture", "capture_test_data", "waypoint", "get_waypoints", "get_metadata", 
+        "generate_report", "generate_comprehensive_report", "export_data", "reports", 
+        "route_analysis", "download/<filename>"
     ]
 
 @router.post("/available")
