@@ -12,4 +12,5 @@ dependencies = [
     "reportlab>=4.0.0",
     "typing-extensions>=4.0.0",
     "werkzeug>=3.0.0",
+    "opencv-python>=4.8.0",
 ]
