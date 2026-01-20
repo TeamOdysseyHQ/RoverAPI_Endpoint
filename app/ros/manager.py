@@ -50,7 +50,7 @@ class RosbridgeManager:
         try:
             self.client = roslibpy.Ros(host=self.config.host, port=self.config.port)
             self.client.on_ready(self._on_ready)
-            self.client.on_close(self._on_close)
+            self.client.on('close', self._on_close)
 
             self.client.run()
 
@@ -158,6 +158,7 @@ class RosbridgeManager:
             # Default callback stores latest message
             def default_callback(message):
                 self._latest_messages[topic_name] = message
+                print(f"[ROS Manager] Received message on {topic_name}: {message}")
                 if callback:
                     callback(message)
 
