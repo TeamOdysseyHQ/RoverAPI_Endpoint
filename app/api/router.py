@@ -3,7 +3,7 @@ from fastapi import APIRouter
 # Import all module routers
 from app.api.navigation import camera, report, available as nav_available, ros_nav
 from app.api.diagnostics import doctor, available as dgt_available
-from app.api.science import available as sci_available, reports as sci_reports
+from app.api.science import available as sci_available, report as sci_reports
 from app.api.arm import available as arm_available
 from app.api.others import test, available as o_available, teensy
 from app.api import ros_endpoints

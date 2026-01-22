@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 import os
-from report_handler import ReportHandler, DuplicationError, ReportGenerationFailure 
+from .report_handler import ReportHandler, DuplicationError, ReportGenerationFailure 
 
 router = APIRouter()
     
