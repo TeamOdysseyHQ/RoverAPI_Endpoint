@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi[standard]>=0.120.2",
-    "flask>=3.1.1",
     "folium>=0.20.0",
     "pillow>=10.0.0",
     "reportlab>=4.0.0",

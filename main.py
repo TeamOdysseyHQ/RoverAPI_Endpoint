@@ -1,8 +1,10 @@
+import threading
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.api.router import router
 from app.ros.manager import ros_manager
-import threading
 
 app = FastAPI(
     title="RoverAPI Endpoint",
