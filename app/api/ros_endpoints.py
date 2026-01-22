@@ -6,6 +6,23 @@ from app.ros.manager import ros_manager
 
 router = APIRouter()
 
+
+@router.get("/status")
+async def get_api_status():
+    """
+    Get API server status - used for connection testing from the UI.
+    Returns server health and ROS bridge connection state.
+    """
+    ros_status = "connected" if ros_manager.is_connected else "disconnected"
+    return {
+        "success": True,
+        "status": "ok",
+        "message": "Rover API Server is running",
+        "version": "2.0.0",
+        "ros_bridge": ros_status,
+    }
+
+
 @router.get("/ros/status")
 async def get_ros_status():
     """
