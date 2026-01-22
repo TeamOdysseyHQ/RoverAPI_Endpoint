@@ -6,7 +6,6 @@ from app.ros.manager import ros_manager
 
 router = APIRouter()
 
-
 @router.get("/ros/status")
 async def get_ros_status():
     """
