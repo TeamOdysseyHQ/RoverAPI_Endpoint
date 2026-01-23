@@ -34,6 +34,8 @@ class ReportHandler:
     def __init__(self, filename: Optional[str] = None, inference: Optional[str] = None):
         self.content: list[str] = []
         self.filename = filename
+        self.image_not_available = False
+        self.data_not_available = False
         self.inference = inference
         self.date = datetime.date.today().strftime("%d/%m/%Y")
         self.time = datetime.datetime.now().strftime("%I:%M:%S %p")
@@ -77,7 +79,15 @@ class ReportHandler:
             self.inference = inference
     
         self.format_header()
-        self.handle_sensor_data()
+
+        try:
+            self.handle_sensor_data()
+        except Exception as e:
+            self.data_not_available = True
+        
+        if self.data_not_available and self.image_not_available:
+            raise ReportGenerationFailure("Data and Image unavailable. Request denied!")
+
         self.handle_inferences(inference=inference)
     
         with open(self.fileloc, 'w') as out:
@@ -111,6 +121,7 @@ class ReportHandler:
         image_path:str = ""
     
         if not image_path:
+            self.image_not_available = True
             return
     
         self.content.append(
@@ -130,11 +141,11 @@ class ReportHandler:
         sensor_data: SensorData = {}
         # fetch sensor data
 
-        if not ros_manager.is_connected():
+        if not ros_manager.is_connected:
             raise ReportGenerationFailure("Not connected to ROS. Cannot fetch sensor data.")
         
         if SCIENCE_DATA_TOPIC not in ros_manager._subscribers:
-            success = ros_manager.subscribe_to_topic(SCIENCE_DATA_TOPIC, "std_msgs/msg/Float32MultiArray")
+            success = ros_manager.subscribe(SCIENCE_DATA_TOPIC, "std_msgs/msg/Float32MultiArray")
             if not success:
                 raise ReportGenerationFailure(f"Failed to subscribe to {SCIENCE_DATA_TOPIC}")
                 
@@ -146,10 +157,8 @@ class ReportHandler:
             data = ros_manager.get_latest_message(SCIENCE_DATA_TOPIC)
             
             if data is None:
-                raise ReportGenerationFailure(f"No data received on {SCIENCE_DATA_TOPIC}")
-            
-            if not isinstance(data, Float32MultiArray):
-                raise ReportGenerationFailure(f"Unexpected data type on {SCIENCE_DATA_TOPIC}")
+                self.data_not_available = True
+                return
             
         data = data.data  # Assuming data is a Float32MultiArray
         colourless = bool(data[0])
@@ -194,7 +203,7 @@ class ReportHandler:
             "== Sensor Data:\n"
         )
     
-        sensor_data: dict[str, Union[str, int, float]] = {} #self.read_sci_report_data()
+        sensor_data: dict[str, Union[str, int, float]] = self.read_sci_report_data()
         # fetch sensor data
     
         self.content.append(
