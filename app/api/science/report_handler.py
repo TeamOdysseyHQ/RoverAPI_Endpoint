@@ -5,6 +5,11 @@ import datetime
 import os
 import uuid
 import subprocess
+from app.ros.manager import ros_manager
+from app.ros.topics import SCIENCE_DATA_TOPIC
+from std_msgs.msg import Float32MultiArray
+
+SensorData = dict[str, Union[str, int, float]]
     
 class DuplicationError(Exception):
     
@@ -46,6 +51,9 @@ class ReportHandler:
     
                 self.filename = f"report_{self.ts}.typ"
                 self.filename_compiled = f"report_{self.ts}.pdf"
+
+                self.fileloc = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename
+                self.fileloc_compiled = self.fileloc = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename_compiled
     
                 if os.path.exists(self.filename) or os.path.exists(self.filename_compiled):
                     raise DuplicationError(f"Report {self.filename} already exists.")
@@ -54,6 +62,9 @@ class ReportHandler:
     
                 self.filename = filename if filename.endswith(".typ") else filename + ".typ"
                 self.filename_compiled: str = self.filename[:len(self.filename)-4] + ".pdf"
+
+                self.fileloc = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename
+                self.fileloc_compiled = self.fileloc = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename_compiled
     
             
         except IOError as ioe:
@@ -69,12 +80,12 @@ class ReportHandler:
         self.handle_sensor_data()
         self.handle_inferences(inference=inference)
     
-        with open(self.filename, 'w') as out:
+        with open(self.fileloc, 'w') as out:
             out.writelines(self.content)
     
         # add compiler step later
         try:
-            res = subprocess.run(["typst", "compile", self.filename], capture_output=True, text=True, check=True)
+            res = subprocess.run(["typst", "compile", self.fileloc], capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as cpe:
             raise ReportGenerationFailure(f"Typst compilation failed with error code {cpe.returncode}: {cpe.stderr}")
         except FileNotFoundError:
@@ -82,8 +93,8 @@ class ReportHandler:
     
             # move to reports directory
     
-        os.link(self.filename_compiled, f"/home/administratror/sci_reports_0x1000/{self.report_id}.pdf")
-        return self.report_id, os.path.abspath(self.filename_compiled)
+        os.link(self.fileloc_compiled, f"/home/administratror/sci_reports_0x1000/{self.report_id}.pdf")
+        return self.report_id, os.path.abspath(self.fileloc_compiled)
     
     def format_header(self) -> None:
     
@@ -97,10 +108,10 @@ class ReportHandler:
             f"Altitude (From the sea level) - {altitude}m\n"
         )
     
-        image_path:str = "temp.jpeg"
+        image_path:str = ""
     
         if not image_path:
-            raise ReportGenerationFailure("Soil image path not provided.")
+            return
     
         self.content.append(
             f"""
@@ -113,6 +124,69 @@ class ReportHandler:
                 )\n
             """
         )
+
+    def read_sci_report_data(self) -> SensorData:
+
+        sensor_data: SensorData = {}
+        # fetch sensor data
+
+        if not ros_manager.is_connected():
+            raise ReportGenerationFailure("Not connected to ROS. Cannot fetch sensor data.")
+        
+        if SCIENCE_DATA_TOPIC not in ros_manager._subscribers:
+            success = ros_manager.subscribe_to_topic(SCIENCE_DATA_TOPIC, "std_msgs/msg/Float32MultiArray")
+            if not success:
+                raise ReportGenerationFailure(f"Failed to subscribe to {SCIENCE_DATA_TOPIC}")
+                
+        time.sleep(0.5)
+        data = ros_manager.get_latest_message(SCIENCE_DATA_TOPIC)
+
+        if data is None:
+            time.sleep(1.0)
+            data = ros_manager.get_latest_message(SCIENCE_DATA_TOPIC)
+            
+            if data is None:
+                raise ReportGenerationFailure(f"No data received on {SCIENCE_DATA_TOPIC}")
+            
+            if not isinstance(data, Float32MultiArray):
+                raise ReportGenerationFailure(f"Unexpected data type on {SCIENCE_DATA_TOPIC}")
+            
+        data = data.data  # Assuming data is a Float32MultiArray
+        colourless = bool(data[0])
+        purple = bool(data[1])
+        pink = bool(data[2])
+
+        N = data[3]
+        P = data[4]
+        K = data[5]
+
+        ph = data[6]
+        co2 = data[7]
+        temp = data[8]
+        press = data[9]
+        alt = data[10]
+        lat = data[11]
+        lon = data[12]
+        dist = data[13]
+
+        sensor_data = {
+            "cs_tcs_34725": f"Colourless: {'Yes' if colourless else 'No'}  Purple: {'Yes' if purple else 'No'}  Pink: {'Yes' if pink else 'No'}",
+            "NPK_sensor_nitrogen": N,
+            "NPK_sensor_phos": P,
+            "NPK_sensor_potassium": K,
+            "ph": ph,
+            "mq_135": co2,
+            "gy-bmp280_temp": temp,
+            "gy-bmp280_pressure": press,
+            "gy-bmp280_altitude": alt,
+            "gps": f"Lat: {lat}, Lon: {lon}",
+            "vl53lox": dist
+        }
+
+        print("Received sensor values: ", data)
+        print("Parsed sensor data: ", sensor_data)
+
+        return sensor_data
     
     def handle_sensor_data(self) -> None:
     
@@ -120,7 +194,7 @@ class ReportHandler:
             "== Sensor Data:\n"
         )
     
-        sensor_data: dict[str, Union[str, int, float]] = {}
+        sensor_data: dict[str, Union[str, int, float]] = {} #self.read_sci_report_data()
         # fetch sensor data
     
         self.content.append(
@@ -182,6 +256,7 @@ class ReportHandler:
     
     
 if __name__ == "__main__":
+
     
     rh = ReportHandler(inference="Lil nigga inference")
     rid, rph = rh.create_report()

@@ -53,3 +53,5 @@ storage/waypoints.json
 *.log
 
 *.md
+
+report_sci_gen/

@@ -4,11 +4,17 @@ import os
 from .report_handler import ReportHandler, DuplicationError, ReportGenerationFailure 
 
 router = APIRouter()
-    
+
+@router.get
+
 @router.post("/reports")
 async def sci_reports(request: Request):
     
-    data = await request.json()
+    data = (
+        await request.json()
+        if request.headers.get("content-type") == "application/json"
+        else None
+    )
     
     if not (data and data.get("inference")):
         return {
@@ -70,10 +76,123 @@ def verify_report_access(rid: str, rpath: str) -> int:
     
     return 0 #* unknown report!
     
+@router.get("/report/{id}")
+async def get_report_by_id(id: str):
+    info_code = verify_report_access(id, None)
+    
+    if info_code == 0:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": "Report not found with given ID."
+        }
+    
+    elif info_code == 1:
+        return FileResponse(path=f"/home/administratror/sci_reports_0x1000/{id}.pdf", 
+                            media_type='application/pdf', filename=f"{id}.pdf")
+    
+    else:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": "Unhandled error in report retrieval by ID."
+        }
+
+@router.get("/report/path/{path}")
+async def get_report_by_path(path: str):
+    info_code = verify_report_access(None, path)
+    
+    if info_code == 0:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": "Report not found with given path."
+        }
+    
+    elif info_code == 2:
+        return FileResponse(path=path, media_type='application/pdf', filename=os.path.basename(path))
+    
+    else:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": "Unhandled error in report retrieval by path."
+        }
+    
+@router.get("/report/{id}/path/{path}")
+async def get_report_by_id_and_path(id: str, path: str):
+
+    info_code = verify_report_access(id, path)
+    if info_code == 0:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": "Report not found with given ID or path."
+        }
+    
+    elif info_code == 1:
+        return FileResponse(path=f"/home/administratror/sci_reports_0x1000/{id}.pdf", 
+                            media_type='application/pdf', filename=f"{id}.pdf")
+    
+    elif info_code == 2:
+        return FileResponse(path=path, media_type='application/pdf', filename=os.path.basename(path))
+    
+    else:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": "Unhandled error in report retrieval by ID and path."
+        }
+    
+@router.get("/reports/ids")
+async def list_reports():
+    
+    try:
+        reports = os.listdir("/home/administratror/sci_reports_0x1000/")
+        report_ids = [f[:-4] for f in reports if f.endswith(".pdf")]
+        
+        return {
+            "success": True,
+            "status": "Success",
+            "message": "Reports listed successfully.",
+            "report_ids": report_ids,
+        }
+    
+    except Exception as e:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": f"Failed to list reports: {e}"
+        }
+    
+@router.get("/reports/path")
+async def list_reports_path():
+    
+    try:
+        reports = os.listdir("/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/")
+
+        return {
+            "success": True,
+            "status": "Success",
+            "message": "Reports listed successfully.",
+            "report_ids": reports,
+        }
+    
+    except Exception as e:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": f"Failed to list reports: {e}"
+        }
+
 @router.post("/get_report")
 async def get_report(request: Request):
     
-    data = await request.json()
+    data = (
+        await request.json()
+        if request.headers.get("content-type") == "application/json"
+        else None
+    )
     
     if not (data and (data.get("report_id") or data.get("report_path"))):
         return {
