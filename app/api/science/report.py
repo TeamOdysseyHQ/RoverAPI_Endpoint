@@ -52,7 +52,7 @@ async def sci_reports(request: Request):
         return {
             "success": False,
             "status": "Error",
-            "message": f"Report generation failed: {rgf}"
+            "message": f"{rgf}"
         }
     except DuplicationError as de:
         return {

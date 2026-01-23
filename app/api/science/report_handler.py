@@ -7,7 +7,7 @@ import uuid
 import subprocess
 from app.ros.manager import ros_manager
 from app.ros.topics import SCIENCE_DATA_TOPIC
-from std_msgs.msg import Float32MultiArray
+#from std_msgs.msg import Float32MultiArray
 
 SensorData = dict[str, Union[str, int, float]]
     
@@ -55,7 +55,7 @@ class ReportHandler:
                 self.filename_compiled = f"report_{self.ts}.pdf"
 
                 self.fileloc = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename
-                self.fileloc_compiled = self.fileloc = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename_compiled
+                self.fileloc_compiled = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename_compiled
     
                 if os.path.exists(self.filename) or os.path.exists(self.filename_compiled):
                     raise DuplicationError(f"Report {self.filename} already exists.")
@@ -66,11 +66,12 @@ class ReportHandler:
                 self.filename_compiled: str = self.filename[:len(self.filename)-4] + ".pdf"
 
                 self.fileloc = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename
-                self.fileloc_compiled = self.fileloc = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename_compiled
+                self.fileloc_compiled = "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen/" + self.filename_compiled
     
             
         except IOError as ioe:
             print(f"Failed to open file: {ioe.__str__()}")
+            raise ReportGenerationFailure(f"Failed to open file: {ioe.__str__()}")
     
     
     def create_report(self, inference: Optional[str] = None) -> str:
@@ -92,6 +93,8 @@ class ReportHandler:
     
         with open(self.fileloc, 'w') as out:
             out.writelines(self.content)
+
+        # raise ReportGenerationFailure(f"test {self.fileloc} {self.fileloc_compiled} {self.filename}")
     
         # add compiler step later
         try:
@@ -101,7 +104,7 @@ class ReportHandler:
         except FileNotFoundError:
             raise ReportGenerationFailure("Typst compiler not found. Did you install it?")
     
-            # move to reports directory
+        # move to reports directory
     
         os.link(self.fileloc_compiled, f"/home/administratror/sci_reports_0x1000/{self.report_id}.pdf")
         return self.report_id, os.path.abspath(self.fileloc_compiled)
@@ -145,7 +148,7 @@ class ReportHandler:
             raise ReportGenerationFailure("Not connected to ROS. Cannot fetch sensor data.")
         
         if SCIENCE_DATA_TOPIC not in ros_manager._subscribers:
-            success = ros_manager.subscribe(SCIENCE_DATA_TOPIC, "std_msgs/msg/Float32MultiArray")
+            success = ros_manager.subscribe(SCIENCE_DATA_TOPIC, "std_msgs/Float32MultiArray")
             if not success:
                 raise ReportGenerationFailure(f"Failed to subscribe to {SCIENCE_DATA_TOPIC}")
                 
@@ -160,10 +163,10 @@ class ReportHandler:
                 self.data_not_available = True
                 return
             
-        data = data.data  # Assuming data is a Float32MultiArray
+        data = data["data"]  # Dict access, not attribute
         colourless = bool(data[0])
         purple = bool(data[1])
-        pink = bool(data[2])
+        humidity = data[2]
 
         N = data[3]
         P = data[4]
@@ -179,7 +182,8 @@ class ReportHandler:
         dist = data[13]
 
         sensor_data = {
-            "cs_tcs_34725": f"Colourless: {'Yes' if colourless else 'No'}  Purple: {'Yes' if purple else 'No'}  Pink: {'Yes' if pink else 'No'}",
+            "cs_tcs_34725": f"Colourless: {'Yes' if colourless else 'No'}  Purple: {'Yes' if purple else 'No'}",
+            "humidity": humidity,
             "NPK_sensor_nitrogen": N,
             "NPK_sensor_phos": P,
             "NPK_sensor_potassium": K,
@@ -191,9 +195,6 @@ class ReportHandler:
             "gps": f"Lat: {lat}, Lon: {lon}",
             "vl53lox": dist
         }
-
-        print("Received sensor values: ", data)
-        print("Parsed sensor data: ", sensor_data)
 
         return sensor_data
     

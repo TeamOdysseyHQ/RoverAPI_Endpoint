@@ -7,7 +7,7 @@ def sci_avi_l_ret() -> listOfStrings:
     
     #* Add all endpoints here without fail.
     return [
-        "available", "reports", "get_report"
+        "available", "reports", "get_report", "report/:id", "report/path/:path", "report/:id/path/:path", "/reports/ids", "/reports/path"
     ]
     
 @router.post("/available")

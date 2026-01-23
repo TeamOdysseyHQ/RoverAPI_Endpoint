@@ -3,7 +3,7 @@ from fastapi import APIRouter
 # Import all module routers
 from app.api.navigation import camera, report, available as nav_available, ros_nav
 from app.api.diagnostics import doctor, available as dgt_available
-from app.api.science import available as sci_available, report as sci_reports
+from app.api.science import available as sci_available, report as sci_reports, sensor_data as sci_sensor_data
 from app.api.arm import available as arm_available
 from app.api.others import test, available as o_available, teensy
 from app.api import ros_endpoints
@@ -24,6 +24,7 @@ router.include_router(dgt_available.router, prefix="/api/dgt", tags=["diagnostic
 # Science endpoints -> /api/sci/
 router.include_router(sci_available.router, prefix="/api/sci", tags=["science"])
 router.include_router(sci_reports.router, prefix="/api/sci", tags=["science"])
+router.include_router(sci_sensor_data.router, prefix="/api/sci", tags=["science", "sensor", "ros"])
  
 # Arm endpoints -> /api/arm/
 router.include_router(arm_available.router, prefix="/api/arm", tags=["arm"])

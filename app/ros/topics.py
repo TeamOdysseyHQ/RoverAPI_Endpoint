@@ -17,4 +17,4 @@ BATTERY_TOPIC = "/battery_state"
 ARM_JOINT_STATES = "/joint_states"
 
 # Science topics
-SCIENCE_DATA_TOPIC = "/science/data"
+SCIENCE_DATA_TOPIC = "/science_sensor_data"
