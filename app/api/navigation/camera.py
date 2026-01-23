@@ -4,6 +4,7 @@ from datetime import datetime
 import os, json, cv2, threading
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 router = APIRouter()
 
@@ -21,14 +22,48 @@ class MultiCameraManager:
         self.cameras: dict[int, cv2.VideoCapture] = {}
         self.camera_info: dict[int, dict] = {}
         self.streaming_status: dict[int, bool] = {}
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()  # Use RLock to allow reentrant locking
+        self._executor = ThreadPoolExecutor(max_workers=2)
+
+        # WebSocket client tracking
+        self.ws_clients: dict[int, list] = {}  # camera_index -> list of WebSocket refs
+
+    def _open_camera_with_timeout(self, camera_index: int, timeout: float = 5.0):
+        """Open camera with timeout to prevent hanging"""
+
+        def open_camera():
+            return cv2.VideoCapture(camera_index)
+
+        try:
+            future = self._executor.submit(open_camera)
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            print(f"[Camera] Timeout opening camera {camera_index}")
+            return None
+        except Exception as e:
+            print(f"[Camera] Error opening camera {camera_index}: {e}")
+            return None
 
     def detect_cameras(self, max_cameras: int = 10):
         """Detect all available cameras"""
         available = []
         for index in range(max_cameras):
-            cap = cv2.VideoCapture(index)
-            if cap.isOpened():
+            # Skip if camera is already active
+            if index in self.cameras:
+                info = self.camera_info.get(index, {})
+                available.append(
+                    {
+                        "index": index,
+                        "backend": "V4L2",
+                        "default_resolution": f"{info.get('width', 640)}x{info.get('height', 480)}",
+                        "default_fps": info.get("fps", 30),
+                        "active": True,
+                    }
+                )
+                continue
+
+            cap = self._open_camera_with_timeout(index, timeout=2.0)
+            if cap is not None and cap.isOpened():
                 # Get camera info
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -61,10 +96,20 @@ class MultiCameraManager:
             if camera_index in self.cameras and self.cameras[camera_index].isOpened():
                 return True
 
-            camera = cv2.VideoCapture(camera_index)
-            if not camera.isOpened():
+            print(f"[Camera] Opening camera {camera_index}...")
+            camera = self._open_camera_with_timeout(camera_index, timeout=5.0)
+
+            if camera is None:
+                print(f"[Camera] Failed to open camera {camera_index} (timeout)")
                 return False
 
+            if not camera.isOpened():
+                print(f"[Camera] Camera {camera_index} not opened")
+                return False
+
+            print(
+                f"[Camera] Setting camera {camera_index} to {width}x{height} @ {fps}fps"
+            )
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             camera.set(cv2.CAP_PROP_FPS, fps)
@@ -76,6 +121,7 @@ class MultiCameraManager:
                 "fps": fps,
             }
             self.streaming_status[camera_index] = False
+            print(f"[Camera] Camera {camera_index} started successfully")
             return True
 
     def stop_camera(self, camera_index: int):
@@ -120,7 +166,7 @@ class MultiCameraManager:
                 camera_index not in self.cameras
                 or not self.cameras[camera_index].isOpened()
             ):
-                return {"active": False, "streaming": False}
+                return {"active": False, "streaming": False, "ws_clients": 0}
 
             camera = self.cameras[camera_index]
             return {
@@ -130,6 +176,7 @@ class MultiCameraManager:
                 "width": int(camera.get(cv2.CAP_PROP_FRAME_WIDTH)),
                 "height": int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                 "fps": int(camera.get(cv2.CAP_PROP_FPS)),
+                "ws_clients": self.get_ws_client_count(camera_index),
             }
 
     def get_all_statuses(self):
@@ -146,6 +193,31 @@ class MultiCameraManager:
                     "fps": int(camera.get(cv2.CAP_PROP_FPS)),
                 }
             return statuses
+
+    # WebSocket client management methods
+
+    def add_ws_client(self, camera_index: int, websocket):
+        """Register WebSocket client for camera"""
+        with self.lock:
+            if camera_index not in self.ws_clients:
+                self.ws_clients[camera_index] = []
+            self.ws_clients[camera_index].append(websocket)
+
+    def remove_ws_client(self, camera_index: int, websocket):
+        """Unregister WebSocket client"""
+        with self.lock:
+            if camera_index in self.ws_clients:
+                if websocket in self.ws_clients[camera_index]:
+                    self.ws_clients[camera_index].remove(websocket)
+
+                # Cleanup empty list
+                if not self.ws_clients[camera_index]:
+                    del self.ws_clients[camera_index]
+
+    def get_ws_client_count(self, camera_index: int) -> int:
+        """Get WebSocket client count for camera"""
+        with self.lock:
+            return len(self.ws_clients.get(camera_index, []))
 
 
 # Global camera manager instance
