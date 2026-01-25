@@ -20,6 +20,7 @@ from app.api.others import teensy, test
 from app.api.science import available as sci_available
 from app.api.science import report as sci_reports
 from app.api.science import sensor_data as sci_sensor_data
+from app.api.science import microscope, microscope_ws
 
 # Create main router
 router = APIRouter()
@@ -42,6 +43,12 @@ router.include_router(sci_available.router, prefix="/api/sci", tags=["science"])
 router.include_router(sci_reports.router, prefix="/api/sci", tags=["science"])
 router.include_router(
     sci_sensor_data.router, prefix="/api/sci", tags=["science", "sensor", "ros"]
+)
+router.include_router(
+    microscope.router, prefix="/api/sci", tags=["science", "microscope"]
+)
+router.include_router(
+    microscope_ws.router, prefix="/api/sci", tags=["science", "microscope", "websocket"]
 )
 
 # Arm endpoints -> /api/arm/
