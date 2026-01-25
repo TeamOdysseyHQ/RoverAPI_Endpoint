@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from datetime import datetime
-import os, json, cv2, threading
+import os, json, cv2, threading, subprocess, re
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -251,6 +251,150 @@ class MultiCameraManager:
         with self.lock:
             return len(self.ws_clients.get(camera_name, []))
 
+    def get_supported_resolutions(self, camera_name: str) -> dict:
+        """Query supported resolutions for a camera using v4l2-ctl"""
+        device_path = CAMERA_DEVICES.get(camera_name)
+        if not device_path or not os.path.exists(device_path):
+            return {
+                "success": False,
+                "error": f"Camera '{camera_name}' not found",
+                "formats": [],
+            }
+
+        # Preset fallback resolutions
+        FALLBACK_RESOLUTIONS = [
+            {"width": 1920, "height": 1080},
+            {"width": 1280, "height": 720},
+            {"width": 640, "height": 480},
+            {"width": 320, "height": 240},
+        ]
+
+        try:
+            # Try using v4l2-ctl to query supported formats
+            result = subprocess.run(
+                ["v4l2-ctl", "-d", device_path, "--list-formats-ext"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            if result.returncode != 0:
+                print(
+                    f"[Camera] v4l2-ctl failed for {camera_name}, using fallback presets"
+                )
+                return {
+                    "success": True,
+                    "formats": [
+                        {
+                            "fourcc": "PRESET",
+                            "description": "Common resolutions (v4l2-ctl unavailable)",
+                            "resolutions": FALLBACK_RESOLUTIONS,
+                        }
+                    ],
+                }
+
+            # Parse v4l2-ctl output
+            formats = []
+            current_format = None
+            current_format_desc = None
+            current_resolutions = []
+
+            for line in result.stdout.split("\n"):
+                # Parse format line: [0]: 'MJPG' (Motion-JPEG, compressed)
+                format_match = re.match(r"\s*\[\d+\]: '(\w+)' \((.+)\)", line)
+                if format_match:
+                    # Save previous format
+                    if current_format and current_resolutions:
+                        formats.append(
+                            {
+                                "fourcc": current_format,
+                                "description": current_format_desc,
+                                "resolutions": current_resolutions,
+                            }
+                        )
+
+                    current_format = format_match.group(1)
+                    current_format_desc = format_match.group(2)
+                    current_resolutions = []
+                    continue
+
+                # Parse size line: Size: Discrete 1280x720
+                size_match = re.match(r"\s*Size: Discrete (\d+)x(\d+)", line)
+                if size_match and current_format:
+                    width, height = int(size_match.group(1)), int(size_match.group(2))
+                    # Avoid duplicates
+                    if not any(
+                        r["width"] == width and r["height"] == height
+                        for r in current_resolutions
+                    ):
+                        current_resolutions.append({"width": width, "height": height})
+
+            # Save last format
+            if current_format and current_resolutions:
+                formats.append(
+                    {
+                        "fourcc": current_format,
+                        "description": current_format_desc,
+                        "resolutions": current_resolutions,
+                    }
+                )
+
+            if not formats:
+                print(
+                    f"[Camera] No formats parsed from v4l2-ctl for {camera_name}, using fallback"
+                )
+                return {
+                    "success": True,
+                    "formats": [
+                        {
+                            "fourcc": "PRESET",
+                            "description": "Common resolutions (parsing failed)",
+                            "resolutions": FALLBACK_RESOLUTIONS,
+                        }
+                    ],
+                }
+
+            return {"success": True, "formats": formats}
+
+        except FileNotFoundError:
+            print(
+                f"[Camera] v4l2-ctl not found, using fallback presets for {camera_name}"
+            )
+            return {
+                "success": True,
+                "formats": [
+                    {
+                        "fourcc": "PRESET",
+                        "description": "Common resolutions (v4l2-ctl not installed)",
+                        "resolutions": FALLBACK_RESOLUTIONS,
+                    }
+                ],
+            }
+        except subprocess.TimeoutExpired:
+            print(f"[Camera] v4l2-ctl timeout for {camera_name}, using fallback")
+            return {
+                "success": True,
+                "formats": [
+                    {
+                        "fourcc": "PRESET",
+                        "description": "Common resolutions (query timeout)",
+                        "resolutions": FALLBACK_RESOLUTIONS,
+                    }
+                ],
+            }
+        except Exception as e:
+            print(f"[Camera] Error querying resolutions for {camera_name}: {e}")
+            return {
+                "success": True,
+                "formats": [
+                    {
+                        "fourcc": "PRESET",
+                        "description": "Common resolutions (query error)",
+                        "resolutions": FALLBACK_RESOLUTIONS,
+                    }
+                ],
+            }
+
 
 # Global camera manager instance
 camera_manager = MultiCameraManager()
@@ -278,6 +422,28 @@ async def detect_cameras():
     """Detect all available cameras"""
     cameras = camera_manager.detect_cameras()
     return {"status": "ok", "cameras": cameras, "count": len(cameras)}
+
+
+@router.get("/cameras/{camera_name}/resolutions")
+async def get_camera_resolutions(camera_name: str):
+    """Get supported resolutions for a specific camera"""
+    if camera_name not in CAMERA_DEVICES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Camera '{camera_name}' not found. Available cameras: {', '.join(CAMERA_DEVICES.keys())}",
+        )
+
+    result = camera_manager.get_supported_resolutions(camera_name)
+
+    if not result.get("success", False) and result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+
+    return {
+        "success": True,
+        "camera_name": camera_name,
+        "device_path": CAMERA_DEVICES.get(camera_name),
+        "formats": result.get("formats", []),
+    }
 
 
 @router.post("/cameras/{camera_name}/start")

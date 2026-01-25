@@ -1,8 +1,13 @@
+import json
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from datetime import datetime
+
+import cv2
 from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import StreamingResponse
-from datetime import datetime
-import os, json, cv2, threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 router = APIRouter()
 
@@ -20,7 +25,7 @@ class MicroscopeManager:
         self.streaming_status: bool = False
         self.lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1)
-        self.device_path = "/dev/microscope"
+        self.device_path = "/dev/camera-microscope"
 
         # WebSocket client tracking
         self.ws_clients: list = []
