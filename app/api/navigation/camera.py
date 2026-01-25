@@ -82,10 +82,6 @@ class MultiCameraManager:
                     }
                 )
                 cap.release()
-            else:
-                # Stop checking after first gap to avoid long delays
-                if index > 0 and len(available) > 0:
-                    break
         return available
 
     def start_camera(

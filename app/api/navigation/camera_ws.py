@@ -288,27 +288,51 @@ async def camera_stream_ws(
     # Import camera manager
     from app.api.navigation.camera import camera_manager
 
+    # Accept connection FIRST (required by WebSocket protocol)
+    await websocket.accept()
+
     # Check if camera is started
     status = camera_manager.get_camera_status(camera_index)
     if not status["active"]:
-        await websocket.close(
-            code=4000,
-            reason=f"Camera {camera_index} not started. Call /cameras/{camera_index}/start first",
+        await websocket.send_json(
+            {
+                "type": "error",
+                "message": f"Camera {camera_index} not started. Call /cameras/{camera_index}/start first",
+            }
         )
+        await websocket.close(code=4000, reason="Camera not started")
         return
 
     # Check connection limit
     if ws_manager.get_connection_count(camera_index) >= MAX_CLIENTS_PER_CAMERA:
-        await websocket.close(
-            code=4001, reason=f"Too many clients connected to camera {camera_index}"
+        await websocket.send_json(
+            {
+                "type": "error",
+                "message": f"Too many clients connected to camera {camera_index}",
+            }
         )
+        await websocket.close(code=4001, reason="Too many clients")
         return
 
-    # Accept connection
-    connection_accepted = await ws_manager.connect(camera_index, websocket)
-    if not connection_accepted:
-        await websocket.close(code=4001, reason="Connection limit reached")
-        return
+    # Register connection manually (already accepted above)
+    async with ws_manager.lock:
+        if camera_index not in ws_manager.active_connections:
+            ws_manager.active_connections[camera_index] = []
+        ws_manager.active_connections[camera_index].append(websocket)
+
+        # Initialize stats
+        if camera_index not in ws_manager.connection_stats:
+            ws_manager.connection_stats[camera_index] = {
+                "total_connected": 0,
+                "total_disconnected": 0,
+                "frames_sent": 0,
+                "errors": 0,
+            }
+        ws_manager.connection_stats[camera_index]["total_connected"] += 1
+
+    print(
+        f"[WS] Client connected to camera {camera_index} ({ws_manager.get_connection_count(camera_index)} total)"
+    )
 
     # Register with camera manager
     camera_manager.add_ws_client(camera_index, websocket)
