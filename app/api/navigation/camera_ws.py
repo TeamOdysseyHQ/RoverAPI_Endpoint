@@ -94,19 +94,19 @@ class WebSocketConnectionManager:
     """
 
     def __init__(self):
-        # camera_index -> list of WebSocket connections
-        self.active_connections: Dict[int, List[WebSocket]] = {}
+        # camera_name -> list of WebSocket connections
+        self.active_connections: Dict[str, List[WebSocket]] = {}
         self.lock = asyncio.Lock()
 
         # Statistics tracking
-        self.connection_stats: Dict[int, dict] = {}
+        self.connection_stats: Dict[str, dict] = {}
 
-    async def connect(self, camera_index: int, websocket: WebSocket) -> bool:
+    async def connect(self, camera_name: str, websocket: WebSocket) -> bool:
         """
         Accept and register new WebSocket connection.
 
         Args:
-            camera_index: Camera identifier
+            camera_name: Camera identifier
             websocket: WebSocket connection to register
 
         Returns:
@@ -114,7 +114,7 @@ class WebSocketConnectionManager:
         """
         async with self.lock:
             # Check connection limit
-            current_count = len(self.active_connections.get(camera_index, []))
+            current_count = len(self.active_connections.get(camera_name, []))
             if current_count >= MAX_CLIENTS_PER_CAMERA:
                 return False
 
@@ -122,58 +122,58 @@ class WebSocketConnectionManager:
             await websocket.accept()
 
             # Register connection
-            if camera_index not in self.active_connections:
-                self.active_connections[camera_index] = []
-            self.active_connections[camera_index].append(websocket)
+            if camera_name not in self.active_connections:
+                self.active_connections[camera_name] = []
+            self.active_connections[camera_name].append(websocket)
 
             # Initialize stats
-            if camera_index not in self.connection_stats:
-                self.connection_stats[camera_index] = {
+            if camera_name not in self.connection_stats:
+                self.connection_stats[camera_name] = {
                     "total_connected": 0,
                     "total_disconnected": 0,
                     "frames_sent": 0,
                     "errors": 0,
                 }
-            self.connection_stats[camera_index]["total_connected"] += 1
+            self.connection_stats[camera_name]["total_connected"] += 1
 
         print(
-            f"[WS] Client connected to camera {camera_index} ({current_count + 1} total)"
+            f"[WS] Client connected to camera '{camera_name}' ({current_count + 1} total)"
         )
         return True
 
-    async def disconnect(self, camera_index: int, websocket: WebSocket):
+    async def disconnect(self, camera_name: str, websocket: WebSocket):
         """
         Remove WebSocket connection and cleanup.
 
         Args:
-            camera_index: Camera identifier
+            camera_name: Camera identifier
             websocket: WebSocket connection to remove
         """
         async with self.lock:
-            if camera_index in self.active_connections:
-                if websocket in self.active_connections[camera_index]:
-                    self.active_connections[camera_index].remove(websocket)
+            if camera_name in self.active_connections:
+                if websocket in self.active_connections[camera_name]:
+                    self.active_connections[camera_name].remove(websocket)
 
-                    if camera_index in self.connection_stats:
-                        self.connection_stats[camera_index]["total_disconnected"] += 1
+                    if camera_name in self.connection_stats:
+                        self.connection_stats[camera_name]["total_disconnected"] += 1
 
                 # Clean up empty lists
-                if not self.active_connections[camera_index]:
-                    del self.active_connections[camera_index]
+                if not self.active_connections[camera_name]:
+                    del self.active_connections[camera_name]
 
-        remaining = len(self.active_connections.get(camera_index, []))
+        remaining = len(self.active_connections.get(camera_name, []))
         print(
-            f"[WS] Client disconnected from camera {camera_index} ({remaining} remaining)"
+            f"[WS] Client disconnected from camera '{camera_name}' ({remaining} remaining)"
         )
 
     async def send_to_client(
-        self, camera_index: int, websocket: WebSocket, message: bytes
+        self, camera_name: str, websocket: WebSocket, message: bytes
     ) -> bool:
         """
         Send binary message to specific client.
 
         Args:
-            camera_index: Camera identifier
+            camera_name: Camera identifier
             websocket: Target WebSocket connection
             message: Binary message to send
 
@@ -184,16 +184,16 @@ class WebSocketConnectionManager:
             await websocket.send_bytes(message)
 
             # Update stats
-            if camera_index in self.connection_stats:
-                self.connection_stats[camera_index]["frames_sent"] += 1
+            if camera_name in self.connection_stats:
+                self.connection_stats[camera_name]["frames_sent"] += 1
 
             return True
         except Exception as e:
             print(f"[WS] Error sending to client: {e}")
 
             # Update error stats
-            if camera_index in self.connection_stats:
-                self.connection_stats[camera_index]["errors"] += 1
+            if camera_name in self.connection_stats:
+                self.connection_stats[camera_name]["errors"] += 1
 
             return False
 
@@ -215,14 +215,14 @@ class WebSocketConnectionManager:
             print(f"[WS] Error sending JSON: {e}")
             return False
 
-    def get_connection_count(self, camera_index: int) -> int:
+    def get_connection_count(self, camera_name: str) -> int:
         """Get number of active connections for camera."""
-        return len(self.active_connections.get(camera_index, []))
+        return len(self.active_connections.get(camera_name, []))
 
-    def get_stats(self, camera_index: int) -> dict:
+    def get_stats(self, camera_name: str) -> dict:
         """Get connection statistics for camera."""
         return self.connection_stats.get(
-            camera_index,
+            camera_name,
             {
                 "total_connected": 0,
                 "total_disconnected": 0,
@@ -249,10 +249,10 @@ class WebSocketConnectionManager:
 ws_manager = WebSocketConnectionManager()
 
 
-@router.websocket("/cameras/{camera_index}/ws")
+@router.websocket("/cameras/{camera_name}/ws")
 async def camera_stream_ws(
     websocket: WebSocket,
-    camera_index: int,
+    camera_name: str,
     quality: int = Query(DEFAULT_QUALITY, ge=1, le=100),
     fps: int = Query(DEFAULT_FPS, ge=1, le=60),
 ):
@@ -283,32 +283,43 @@ async def camera_stream_ws(
         5. Connection closed on error or client disconnect
 
     Example:
-        ws://localhost:6767/api/nav/cameras/0/ws?quality=85&fps=30
+        ws://localhost:6767/api/nav/cameras/rover/ws?quality=85&fps=30
     """
     # Import camera manager
-    from app.api.navigation.camera import camera_manager
+    from app.api.navigation.camera import camera_manager, CAMERA_DEVICES
 
     # Accept connection FIRST (required by WebSocket protocol)
     await websocket.accept()
 
+    # Validate camera name
+    if camera_name not in CAMERA_DEVICES:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "message": f"Camera '{camera_name}' not found. Available cameras: {', '.join(CAMERA_DEVICES.keys())}",
+            }
+        )
+        await websocket.close(code=4000, reason="Invalid camera name")
+        return
+
     # Check if camera is started
-    status = camera_manager.get_camera_status(camera_index)
+    status = camera_manager.get_camera_status(camera_name)
     if not status["active"]:
         await websocket.send_json(
             {
                 "type": "error",
-                "message": f"Camera {camera_index} not started. Call /cameras/{camera_index}/start first",
+                "message": f"Camera '{camera_name}' not started. Call /cameras/{camera_name}/start first",
             }
         )
         await websocket.close(code=4000, reason="Camera not started")
         return
 
     # Check connection limit
-    if ws_manager.get_connection_count(camera_index) >= MAX_CLIENTS_PER_CAMERA:
+    if ws_manager.get_connection_count(camera_name) >= MAX_CLIENTS_PER_CAMERA:
         await websocket.send_json(
             {
                 "type": "error",
-                "message": f"Too many clients connected to camera {camera_index}",
+                "message": f"Too many clients connected to camera '{camera_name}'",
             }
         )
         await websocket.close(code=4001, reason="Too many clients")
@@ -316,39 +327,40 @@ async def camera_stream_ws(
 
     # Register connection manually (already accepted above)
     async with ws_manager.lock:
-        if camera_index not in ws_manager.active_connections:
-            ws_manager.active_connections[camera_index] = []
-        ws_manager.active_connections[camera_index].append(websocket)
+        if camera_name not in ws_manager.active_connections:
+            ws_manager.active_connections[camera_name] = []
+        ws_manager.active_connections[camera_name].append(websocket)
 
         # Initialize stats
-        if camera_index not in ws_manager.connection_stats:
-            ws_manager.connection_stats[camera_index] = {
+        if camera_name not in ws_manager.connection_stats:
+            ws_manager.connection_stats[camera_name] = {
                 "total_connected": 0,
                 "total_disconnected": 0,
                 "frames_sent": 0,
                 "errors": 0,
             }
-        ws_manager.connection_stats[camera_index]["total_connected"] += 1
+        ws_manager.connection_stats[camera_name]["total_connected"] += 1
 
     print(
-        f"[WS] Client connected to camera {camera_index} ({ws_manager.get_connection_count(camera_index)} total)"
+        f"[WS] Client connected to camera '{camera_name}' ({ws_manager.get_connection_count(camera_name)} total)"
     )
 
     # Register with camera manager
-    camera_manager.add_ws_client(camera_index, websocket)
+    camera_manager.add_ws_client(camera_name, websocket)
 
     # Send initial status
     await ws_manager.send_json(
         websocket,
         {
             "type": "status",
-            "camera_index": camera_index,
+            "camera_name": camera_name,
+            "device_path": status.get("device_path", ""),
             "connected": True,
             "quality": quality,
             "fps": fps,
             "resolution": f"{status['width']}x{status['height']}",
             "max_clients": MAX_CLIENTS_PER_CAMERA,
-            "current_clients": ws_manager.get_connection_count(camera_index),
+            "current_clients": ws_manager.get_connection_count(camera_name),
         },
     )
 
@@ -356,6 +368,11 @@ async def camera_stream_ws(
     frame_number = 0
     frame_delay = 1.0 / fps
     current_quality = quality
+
+    # For encoding, we'll use a numeric ID derived from camera name (0 for microscope, 1 for arm, etc.)
+    # This maintains backward compatibility with the frame header format
+    camera_id_map = {"microscope": 0, "arm": 1, "science": 2, "rover": 3}
+    camera_id = camera_id_map.get(camera_name, 0)
 
     try:
         # Main streaming loop
@@ -381,17 +398,17 @@ async def camera_stream_ws(
                 raise
 
             # Capture frame
-            frame = camera_manager.capture_frame(camera_index)
+            frame = camera_manager.capture_frame(camera_name)
             if frame is not None:
                 try:
-                    # Encode frame with header
+                    # Encode frame with header (use camera_id for backward compatibility)
                     binary_message = encode_frame(
-                        frame, camera_index, frame_number, current_quality
+                        frame, camera_id, frame_number, current_quality
                     )
 
                     # Send to client
                     success = await ws_manager.send_to_client(
-                        camera_index, websocket, binary_message
+                        camera_name, websocket, binary_message
                     )
 
                     if success:
@@ -410,13 +427,13 @@ async def camera_stream_ws(
             await asyncio.sleep(frame_delay)
 
     except WebSocketDisconnect:
-        print(f"[WS] Client disconnected from camera {camera_index}")
+        print(f"[WS] Client disconnected from camera '{camera_name}'")
     except Exception as e:
         print(f"[WS] Error in streaming loop: {e}")
     finally:
         # Cleanup
-        camera_manager.remove_ws_client(camera_index, websocket)
-        await ws_manager.disconnect(camera_index, websocket)
+        camera_manager.remove_ws_client(camera_name, websocket)
+        await ws_manager.disconnect(camera_name, websocket)
 
 
 async def handle_control_message(message: str, current_quality: int) -> Optional[dict]:
@@ -508,11 +525,11 @@ async def get_websocket_status():
 
     # Enhance with camera info
     cameras_status = {}
-    for camera_index in all_stats.keys():
-        camera_status = camera_manager.get_camera_status(camera_index)
+    for camera_name in all_stats.keys():
+        camera_status = camera_manager.get_camera_status(camera_name)
 
-        cameras_status[str(camera_index)] = {
-            **all_stats[camera_index],
+        cameras_status[camera_name] = {
+            **all_stats[camera_name],
             "camera_active": camera_status["active"],
             "resolution": f"{camera_status.get('width', 0)}x{camera_status.get('height', 0)}",
             "fps": camera_status.get("fps", 0),
@@ -520,7 +537,7 @@ async def get_websocket_status():
 
     # Calculate totals
     total_active = sum(
-        ws_manager.get_connection_count(cam_idx) for cam_idx in all_stats.keys()
+        ws_manager.get_connection_count(cam_name) for cam_name in all_stats.keys()
     )
 
     return {
@@ -531,13 +548,13 @@ async def get_websocket_status():
     }
 
 
-@router.get("/cameras/{camera_index}/ws/status")
-async def get_camera_websocket_status(camera_index: int):
+@router.get("/cameras/{camera_name}/ws/status")
+async def get_camera_websocket_status(camera_name: str):
     """
     Get WebSocket streaming status for specific camera.
 
     Args:
-        camera_index: Camera identifier
+        camera_name: Camera identifier
 
     Returns:
         Detailed WebSocket statistics and camera info for the specified camera
@@ -547,22 +564,22 @@ async def get_camera_websocket_status(camera_index: int):
     """
     from app.api.navigation.camera import camera_manager
 
-    camera_status = camera_manager.get_camera_status(camera_index)
+    camera_status = camera_manager.get_camera_status(camera_name)
     if not camera_status["active"]:
         raise HTTPException(
-            status_code=404, detail=f"Camera {camera_index} not found or not started"
+            status_code=404, detail=f"Camera '{camera_name}' not found or not started"
         )
 
-    ws_stats = ws_manager.get_stats(camera_index)
+    ws_stats = ws_manager.get_stats(camera_name)
 
     return {
         "status": "ok",
-        "camera_index": camera_index,
+        "camera_name": camera_name,
         "camera_active": camera_status["active"],
         "resolution": f"{camera_status['width']}x{camera_status['height']}",
         "fps": camera_status["fps"],
         "websocket": {
-            "active_connections": ws_manager.get_connection_count(camera_index),
+            "active_connections": ws_manager.get_connection_count(camera_name),
             "max_connections": MAX_CLIENTS_PER_CAMERA,
             **ws_stats,
         },

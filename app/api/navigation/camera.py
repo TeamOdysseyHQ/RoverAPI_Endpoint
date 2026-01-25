@@ -16,44 +16,68 @@ os.makedirs(IMAGE_DIR, exist_ok=True)
 os.makedirs("storage/reports", exist_ok=True)
 
 
+# Camera names mapped to device paths
+CAMERA_DEVICES = {
+    "microscope": "/dev/camera-microscope",
+    "arm": "/dev/camera-arm",
+    "science": "/dev/camera-science",
+    "rover": "/dev/camera-rover",
+}
+
+
 # Camera hardware management
 class MultiCameraManager:
     def __init__(self):
-        self.cameras: dict[int, cv2.VideoCapture] = {}
-        self.camera_info: dict[int, dict] = {}
-        self.streaming_status: dict[int, bool] = {}
+        self.cameras: dict[str, cv2.VideoCapture] = {}
+        self.camera_info: dict[str, dict] = {}
+        self.streaming_status: dict[str, bool] = {}
         self.lock = threading.RLock()  # Use RLock to allow reentrant locking
         self._executor = ThreadPoolExecutor(max_workers=2)
 
         # WebSocket client tracking
-        self.ws_clients: dict[int, list] = {}  # camera_index -> list of WebSocket refs
+        self.ws_clients: dict[str, list] = {}  # camera_name -> list of WebSocket refs
 
-    def _open_camera_with_timeout(self, camera_index: int, timeout: float = 5.0):
+    def _open_camera_with_timeout(
+        self, camera_name: str, timeout: float = 5.0
+    ) -> Optional[cv2.VideoCapture]:
         """Open camera with timeout to prevent hanging"""
 
         def open_camera():
-            return cv2.VideoCapture(camera_index)
+            device_path = CAMERA_DEVICES.get(camera_name)
+            if device_path is None:
+                print(f"[Camera] Unknown camera name: {camera_name}")
+                return None
+
+            if not os.path.exists(device_path):
+                print(
+                    f"[Camera] Device path {device_path} not found for camera {camera_name}"
+                )
+                return None
+
+            print(f"[Camera] Opening {camera_name} at {device_path}")
+            return cv2.VideoCapture(device_path)
 
         try:
             future = self._executor.submit(open_camera)
             return future.result(timeout=timeout)
         except FuturesTimeoutError:
-            print(f"[Camera] Timeout opening camera {camera_index}")
+            print(f"[Camera] Timeout opening camera {camera_name}")
             return None
         except Exception as e:
-            print(f"[Camera] Error opening camera {camera_index}: {e}")
+            print(f"[Camera] Error opening camera {camera_name}: {e}")
             return None
 
-    def detect_cameras(self, max_cameras: int = 10):
-        """Detect all available cameras"""
+    def detect_cameras(self):
+        """Detect all available cameras by checking device paths"""
         available = []
-        for index in range(max_cameras):
+        for camera_name, device_path in CAMERA_DEVICES.items():
             # Skip if camera is already active
-            if index in self.cameras:
-                info = self.camera_info.get(index, {})
+            if camera_name in self.cameras:
+                info = self.camera_info.get(camera_name, {})
                 available.append(
                     {
-                        "index": index,
+                        "name": camera_name,
+                        "device_path": device_path,
                         "backend": "V4L2",
                         "default_resolution": f"{info.get('width', 640)}x{info.get('height', 480)}",
                         "default_fps": info.get("fps", 30),
@@ -62,72 +86,80 @@ class MultiCameraManager:
                 )
                 continue
 
-            cap = self._open_camera_with_timeout(index, timeout=2.0)
+            # Check if device exists
+            if not os.path.exists(device_path):
+                print(f"[Camera] Device {device_path} not found for {camera_name}")
+                continue
+
+            # Try to open camera to get info
+            cap = self._open_camera_with_timeout(camera_name, timeout=2.0)
             if cap is not None and cap.isOpened():
                 # Get camera info
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 fps = int(cap.get(cv2.CAP_PROP_FPS))
 
-                # Try to get camera name (platform-specific)
+                # Try to get camera backend
                 backend = cap.getBackendName()
 
                 available.append(
                     {
-                        "index": index,
+                        "name": camera_name,
+                        "device_path": device_path,
                         "backend": backend,
                         "default_resolution": f"{width}x{height}",
                         "default_fps": fps,
-                        "active": index in self.cameras,
+                        "active": camera_name in self.cameras,
                     }
                 )
                 cap.release()
         return available
 
     def start_camera(
-        self, camera_index: int = 0, width: int = 640, height: int = 480, fps: int = 30
+        self, camera_name: str, width: int = 640, height: int = 480, fps: int = 30
     ):
         """Initialize specific camera"""
         with self.lock:
-            if camera_index in self.cameras and self.cameras[camera_index].isOpened():
+            if camera_name in self.cameras and self.cameras[camera_name].isOpened():
                 return True
 
-            print(f"[Camera] Opening camera {camera_index}...")
-            camera = self._open_camera_with_timeout(camera_index, timeout=5.0)
+            print(f"[Camera] Opening camera {camera_name}...")
+            camera = self._open_camera_with_timeout(camera_name, timeout=5.0)
 
             if camera is None:
-                print(f"[Camera] Failed to open camera {camera_index} (timeout)")
+                print(f"[Camera] Failed to open camera {camera_name} (timeout)")
                 return False
 
             if not camera.isOpened():
-                print(f"[Camera] Camera {camera_index} not opened")
+                print(f"[Camera] Camera {camera_name} not opened")
                 return False
 
             print(
-                f"[Camera] Setting camera {camera_index} to {width}x{height} @ {fps}fps"
+                f"[Camera] Setting camera {camera_name} to {width}x{height} @ {fps}fps"
             )
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             camera.set(cv2.CAP_PROP_FPS, fps)
 
-            self.cameras[camera_index] = camera
-            self.camera_info[camera_index] = {
+            self.cameras[camera_name] = camera
+            self.camera_info[camera_name] = {
                 "width": width,
                 "height": height,
                 "fps": fps,
+                "device_path": CAMERA_DEVICES.get(camera_name, ""),
             }
-            self.streaming_status[camera_index] = False
-            print(f"[Camera] Camera {camera_index} started successfully")
+            self.streaming_status[camera_name] = False
+            print(f"[Camera] Camera {camera_name} started successfully")
             return True
 
-    def stop_camera(self, camera_index: int):
+    def stop_camera(self, camera_name: str):
         """Release specific camera"""
         with self.lock:
-            if camera_index in self.cameras:
-                self.cameras[camera_index].release()
-                del self.cameras[camera_index]
-                del self.camera_info[camera_index]
-                del self.streaming_status[camera_index]
+            if camera_name in self.cameras:
+                self.cameras[camera_name].release()
+                del self.cameras[camera_name]
+                del self.camera_info[camera_name]
+                del self.streaming_status[camera_name]
                 return True
             return False
 
@@ -140,13 +172,13 @@ class MultiCameraManager:
             self.camera_info.clear()
             self.streaming_status.clear()
 
-    def capture_frame(self, camera_index: int):
+    def capture_frame(self, camera_name: str):
         """Capture a single frame from specific camera"""
         with self.lock:
-            if camera_index not in self.cameras:
+            if camera_name not in self.cameras:
                 return None
 
-            camera = self.cameras[camera_index]
+            camera = self.cameras[camera_name]
             if not camera.isOpened():
                 return None
 
@@ -155,35 +187,39 @@ class MultiCameraManager:
                 return None
             return frame
 
-    def get_camera_status(self, camera_index: int):
+    def get_camera_status(self, camera_name: str):
         """Get specific camera status"""
         with self.lock:
             if (
-                camera_index not in self.cameras
-                or not self.cameras[camera_index].isOpened()
+                camera_name not in self.cameras
+                or not self.cameras[camera_name].isOpened()
             ):
                 return {"active": False, "streaming": False, "ws_clients": 0}
 
-            camera = self.cameras[camera_index]
+            camera = self.cameras[camera_name]
+            info = self.camera_info.get(camera_name, {})
             return {
                 "active": True,
-                "streaming": self.streaming_status.get(camera_index, False),
-                "camera_index": camera_index,
+                "streaming": self.streaming_status.get(camera_name, False),
+                "camera_name": camera_name,
+                "device_path": info.get("device_path", ""),
                 "width": int(camera.get(cv2.CAP_PROP_FRAME_WIDTH)),
                 "height": int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                 "fps": int(camera.get(cv2.CAP_PROP_FPS)),
-                "ws_clients": self.get_ws_client_count(camera_index),
+                "ws_clients": self.get_ws_client_count(camera_name),
             }
 
     def get_all_statuses(self):
         """Get status of all cameras"""
         with self.lock:
             statuses = {}
-            for index in self.cameras.keys():
-                camera = self.cameras[index]
-                statuses[index] = {
+            for name in self.cameras.keys():
+                camera = self.cameras[name]
+                info = self.camera_info.get(name, {})
+                statuses[name] = {
                     "active": camera.isOpened(),
-                    "streaming": self.streaming_status.get(index, False),
+                    "streaming": self.streaming_status.get(name, False),
+                    "device_path": info.get("device_path", ""),
                     "width": int(camera.get(cv2.CAP_PROP_FRAME_WIDTH)),
                     "height": int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                     "fps": int(camera.get(cv2.CAP_PROP_FPS)),
@@ -192,28 +228,28 @@ class MultiCameraManager:
 
     # WebSocket client management methods
 
-    def add_ws_client(self, camera_index: int, websocket):
+    def add_ws_client(self, camera_name: str, websocket):
         """Register WebSocket client for camera"""
         with self.lock:
-            if camera_index not in self.ws_clients:
-                self.ws_clients[camera_index] = []
-            self.ws_clients[camera_index].append(websocket)
+            if camera_name not in self.ws_clients:
+                self.ws_clients[camera_name] = []
+            self.ws_clients[camera_name].append(websocket)
 
-    def remove_ws_client(self, camera_index: int, websocket):
+    def remove_ws_client(self, camera_name: str, websocket):
         """Unregister WebSocket client"""
         with self.lock:
-            if camera_index in self.ws_clients:
-                if websocket in self.ws_clients[camera_index]:
-                    self.ws_clients[camera_index].remove(websocket)
+            if camera_name in self.ws_clients:
+                if websocket in self.ws_clients[camera_name]:
+                    self.ws_clients[camera_name].remove(websocket)
 
                 # Cleanup empty list
-                if not self.ws_clients[camera_index]:
-                    del self.ws_clients[camera_index]
+                if not self.ws_clients[camera_name]:
+                    del self.ws_clients[camera_name]
 
-    def get_ws_client_count(self, camera_index: int) -> int:
+    def get_ws_client_count(self, camera_name: str) -> int:
         """Get WebSocket client count for camera"""
         with self.lock:
-            return len(self.ws_clients.get(camera_index, []))
+            return len(self.ws_clients.get(camera_name, []))
 
 
 # Global camera manager instance
@@ -238,40 +274,47 @@ def secure_filename(filename: str) -> str:
 
 
 @router.get("/cameras/detect")
-async def detect_cameras(max_cameras: int = Query(10)):
+async def detect_cameras():
     """Detect all available cameras"""
-    cameras = camera_manager.detect_cameras(max_cameras)
+    cameras = camera_manager.detect_cameras()
     return {"status": "ok", "cameras": cameras, "count": len(cameras)}
 
 
-@router.post("/cameras/{camera_index}/start")
+@router.post("/cameras/{camera_name}/start")
 async def start_camera(
-    camera_index: int,
+    camera_name: str,
     width: int = Form(640),
     height: int = Form(480),
     fps: int = Form(30),
 ):
     """Start specific camera"""
-    success = camera_manager.start_camera(camera_index, width, height, fps)
+    # Validate camera name
+    if camera_name not in CAMERA_DEVICES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Camera '{camera_name}' not found. Available cameras: {', '.join(CAMERA_DEVICES.keys())}",
+        )
+
+    success = camera_manager.start_camera(camera_name, width, height, fps)
     if not success:
         raise HTTPException(
-            status_code=500, detail=f"Failed to open camera {camera_index}"
+            status_code=500, detail=f"Failed to open camera '{camera_name}'"
         )
 
     return {
         "status": "ok",
-        "message": f"Camera {camera_index} started",
-        "camera": camera_manager.get_camera_status(camera_index),
+        "message": f"Camera '{camera_name}' started",
+        "camera": camera_manager.get_camera_status(camera_name),
     }
 
 
-@router.post("/cameras/{camera_index}/stop")
-async def stop_camera(camera_index: int):
+@router.post("/cameras/{camera_name}/stop")
+async def stop_camera(camera_name: str):
     """Stop specific camera"""
-    success = camera_manager.stop_camera(camera_index)
+    success = camera_manager.stop_camera(camera_name)
     if not success:
-        raise HTTPException(status_code=404, detail=f"Camera {camera_index} not found")
-    return {"status": "ok", "message": f"Camera {camera_index} stopped"}
+        raise HTTPException(status_code=404, detail=f"Camera '{camera_name}' not found")
+    return {"status": "ok", "message": f"Camera '{camera_name}' stopped"}
 
 
 @router.post("/cameras/stop_all")
@@ -287,15 +330,15 @@ async def cameras_status():
     return {"status": "ok", "cameras": camera_manager.get_all_statuses()}
 
 
-@router.get("/cameras/{camera_index}/status")
-async def camera_status(camera_index: int):
+@router.get("/cameras/{camera_name}/status")
+async def camera_status(camera_name: str):
     """Get specific camera status"""
-    return {"status": "ok", "camera": camera_manager.get_camera_status(camera_index)}
+    return {"status": "ok", "camera": camera_manager.get_camera_status(camera_name)}
 
 
-@router.post("/cameras/{camera_index}/capture")
+@router.post("/cameras/{camera_name}/capture")
 async def capture_from_camera(
-    camera_index: int,
+    camera_name: str,
     latitude: float = Form(0),
     longitude: float = Form(0),
     altitude: float = Form(0),
@@ -310,23 +353,23 @@ async def capture_from_camera(
     tags: str = Form(""),
 ):
     """Capture image from specific camera"""
-    frame = camera_manager.capture_frame(camera_index)
+    frame = camera_manager.capture_frame(camera_name)
     if frame is None:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to capture from camera {camera_index}. Is it started?",
+            detail=f"Failed to capture from camera '{camera_name}'. Is it started?",
         )
 
     # Save frame as JPEG
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_cam{camera_index}_capture.jpg"
+    filename = f"{timestamp}_{camera_name}_capture.jpg"
     filepath = os.path.join(IMAGE_DIR, filename)
 
     cv2.imwrite(filepath, frame)
     file_size = os.path.getsize(filepath)
 
     # Get actual image dimensions
-    height, width = frame.shape[:2]
+    img_height, img_width = frame.shape[:2]
 
     # Create metadata entry
     metadata = load_json(META_FILE)
@@ -354,8 +397,12 @@ async def capture_from_camera(
             "mission_id": mission_id,
         },
         "camera": {
-            "camera_index": camera_index,
-            "settings": {"resolution": f"{width}x{height}", "hardware_capture": True},
+            "camera_name": camera_name,
+            "device_path": CAMERA_DEVICES.get(camera_name, ""),
+            "settings": {
+                "resolution": f"{img_width}x{img_height}",
+                "hardware_capture": True,
+            },
             "file_size_bytes": file_size,
         },
         "note": note,
@@ -366,17 +413,17 @@ async def capture_from_camera(
 
     return {
         "status": "ok",
-        "message": f"Image captured from camera {camera_index}",
+        "message": f"Image captured from camera '{camera_name}'",
         "saved": filename,
         "metadata": entry,
         "file_size_mb": round(file_size / (1024 * 1024), 2),
     }
 
 
-def generate_video_stream(camera_index: int):
+def generate_video_stream(camera_name: str):
     """Generator function for MJPEG video streaming from specific camera"""
     while True:
-        frame = camera_manager.capture_frame(camera_index)
+        frame = camera_manager.capture_frame(camera_name)
         if frame is None:
             break
 
@@ -391,19 +438,19 @@ def generate_video_stream(camera_index: int):
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
 
-@router.get("/cameras/{camera_index}/stream")
-async def video_stream(camera_index: int):
+@router.get("/cameras/{camera_name}/stream")
+async def video_stream(camera_name: str):
     """Stream live video feed from specific camera (MJPEG)"""
-    status = camera_manager.get_camera_status(camera_index)
+    status = camera_manager.get_camera_status(camera_name)
     if not status["active"]:
         raise HTTPException(
             status_code=400,
-            detail=f"Camera {camera_index} not started. Call /cameras/{camera_index}/start first",
+            detail=f"Camera '{camera_name}' not started. Call /cameras/{camera_name}/start first",
         )
 
-    camera_manager.streaming_status[camera_index] = True
+    camera_manager.streaming_status[camera_name] = True
     return StreamingResponse(
-        generate_video_stream(camera_index),
+        generate_video_stream(camera_name),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
