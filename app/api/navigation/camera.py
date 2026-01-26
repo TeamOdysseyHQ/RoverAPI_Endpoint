@@ -517,6 +517,7 @@ async def capture_from_camera(
     mission_id: str = Form("default"),
     rover_id: str = Form("rover_001"),
     tags: str = Form(""),
+    expedition_id: str = Form("")
 ):
     """Capture image from specific camera"""
     frame = camera_manager.capture_frame(camera_name)
@@ -527,9 +528,21 @@ async def capture_from_camera(
         )
 
     # Save frame as JPEG
+
+    if not expedition_id:
+        return {
+            "status": "error",
+            "message": "Expedition ID must be provided."
+        }
+
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{camera_name}_capture.jpg"
-    filepath = os.path.join(IMAGE_DIR, filename)
+
+    img_dir_loc = "/home/administratror/expeditions/unprocessed/" + expedition_id
+    if not os.path.exists(img_dir_loc):
+        os.mkdir(img_dir_loc)
+
+    filepath = os.path.join(img_dir_loc, filename)
 
     cv2.imwrite(filepath, frame)
     file_size = os.path.getsize(filepath)
@@ -573,6 +586,7 @@ async def capture_from_camera(
         },
         "note": note,
         "tags": tags.split(",") if tags else [],
+        "expedition_id": expedition_id
     }
     metadata.append(entry)
     save_json(META_FILE, metadata)

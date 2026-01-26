@@ -2,6 +2,8 @@ from fastapi import APIRouter, Request, Query
 from fastapi.responses import FileResponse
 from datetime import datetime
 import os
+import uuid
+import time
 from .report_handler import ReportHandler, DuplicationError, ReportGenerationFailure
 
 router = APIRouter()
@@ -22,6 +24,95 @@ REPORT_SOURCE_DIR = os.getenv(
 os.makedirs(REPORT_OUTPUT_DIR, exist_ok=True)
 os.makedirs(REPORT_SOURCE_DIR, exist_ok=True)
 
+@router.post("/assign_expedition")
+async def assign_expedition():
+
+    eid = str(uuid.uuid4()).replace("-", "")
+    counter = 0
+
+    while os.path.exists("/home/administratror/expeditions/unprocessed/" + eid):
+        
+        if counter > 5:
+            eid = str(time.time()).replace(".", "")  # fallback to timestamp
+            break
+        
+        eid = str(uuid.uuid4()).replace("-", "")
+        counter += 1
+
+    os.mkdir("/home/administratror/expeditions/unprocessed/" + eid)
+    return {
+        "success": True,
+        "status": "Success",
+        "expedition_id": eid,
+        "message": "Expedition ID assigned successfully."
+    }
+
+@router.get("/expedition_check/{expedition_id}")
+async def expedition_check(expedition_id: str):
+    unprocessed_path = f"/home/administratror/expeditions/unprocessed/{expedition_id}"
+    processed_path = f"/home/administratror/expeditions/processed/{expedition_id}"
+
+    if os.path.exists(processed_path):
+        status = "processed"
+    elif os.path.exists(unprocessed_path):
+        status = "unprocessed"
+    else:
+        status = "not_found"
+
+    return {
+        "success": True,
+        "status": "Success",
+        "expedition_id": expedition_id,
+        "expedition_status": status,
+        "message": "Expedition status checked successfully."
+    }
+
+@router.post("/expeditions_list")
+async def expeditions_list():
+    
+    try:
+    
+        unprocessed = os.listdir("/home/administratror/expeditions/unprocessed/")
+        processed = os.listdir("/home/administratror/expeditions/processed/")
+
+        for expedition in processed:
+            if expedition in unprocessed:
+                unprocessed.remove(expedition)
+
+            if os.path.exists(f"/home/administratror/expeditions/processed/{expedition}/metadata.dat"):
+                try:
+                    with open(f"/home/administratror/expeditions/processed/{expedition}/metadata.dat", "r") as meta_f:
+                        report_id = meta_f.readline().strip()
+                        processed[processed.index(expedition)] = {
+                            "expedition_id": expedition,
+                            "report_id": report_id,
+                            "failure": False
+                        }
+                except Exception as e:
+
+                    report_id = f"unknown/failed to fetch because of {e}"
+                    processed[processed.index(expedition)] = {
+                        "expedition_id": expedition,
+                        "report_id": report_id,
+                        "failure": True
+                    }
+
+                    pass  # ignore metadata read errors
+
+        return {
+            "success": True,
+            "status": "Success",
+            "unprocessed_expeditions": unprocessed,
+            "processed_expeditions": processed,
+            "message": "Expedition list fetched successfully."
+        }
+    
+    except Exception as e:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": f"Failed to list expeditions: {e}"
+        }
 
 @router.post("/reports")
 async def sci_reports(request: Request):
@@ -37,9 +128,12 @@ async def sci_reports(request: Request):
             "status": "Error",
             "message": "Invalid request. 'inference' field is required.",
         }
+    
+    img_captions: dict[str, str] = data.get("image_captions", {})
+    expedition_id: int | None = data.get("expedition_id", None)
 
     try:
-        rh_handler = ReportHandler()
+        rh_handler = ReportHandler(expedition_id=expedition_id, img_captions=img_captions)
         rid, report_path = rh_handler.create_report(data["inference"])
 
         if not report_path:

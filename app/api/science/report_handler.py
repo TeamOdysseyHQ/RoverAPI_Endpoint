@@ -26,7 +26,6 @@ os.makedirs(REPORT_SOURCE_DIR, exist_ok=True)
 
 SensorData = dict[str, Union[str, int, float]]
 
-
 class DuplicationError(Exception):
     def __init__(self, msg: str, *args):
         super().__init__(msg, *args)
@@ -46,7 +45,9 @@ class ReportGenerationFailure(Exception):
 
 
 class ReportHandler:
-    def __init__(self, filename: Optional[str] = None, inference: Optional[str] = None):
+    def __init__(self, filename: Optional[str] = None, inference: Optional[str] = None, expedition_id: Optional[str] = None,
+        img_captions: Optional[dict[str, str]] = {}):
+    
         self.content: list[str] = []
         self.filename = filename
         self.image_not_available = False
@@ -55,6 +56,11 @@ class ReportHandler:
         self.date = datetime.date.today().strftime("%d/%m/%Y")
         self.time = datetime.datetime.now().strftime("%I:%M:%S %p")
         self.report_id = str(uuid.uuid4()).replace("-", "")
+        self.expedition_id = expedition_id
+
+        self.img_captions = img_captions
+
+        self._validate_expedition_id()
 
         while os.path.exists(os.path.join(REPORT_OUTPUT_DIR, f"{self.report_id}.typ")):
             self.report_id = str(uuid.uuid4()).replace("-", "")  # very rare collision
@@ -95,10 +101,25 @@ class ReportHandler:
             print(f"Failed to open file: {ioe.__str__()}")
             raise ReportGenerationFailure(f"Failed to open file: {ioe.__str__()}")
 
-    def create_report(self, inference: Optional[str] = None) -> str:
+    def _validate_expedition_id(self) -> None:
+        if self.expedition_id is None:
+            return
+            
+        if os.path.exists(f"/home/administratror/expeditions/processed/{self.expedition_id}"):
+            raise DuplicationError("Expedition ID already exists.")
+
+    def create_report(self, inference: Optional[str] = None, expedition_id: Optional[str] = None) -> str:
         if not self.inference:
             self.inference = inference
 
+        if self.expedition_id is None:
+            self.expedition_id = expedition_id
+
+        if self.expedition_id is None:
+            # no eid = assume no images.
+            self.image_not_available = True
+
+        self._validate_expedition_id()
         self.format_header()
 
         try:
@@ -147,23 +168,7 @@ class ReportHandler:
 
         self.content.append(f"Altitude (From the sea level) - {altitude}m\n")
 
-        image_path: str = ""
-
-        if not image_path:
-            self.image_not_available = True
-            return
-
-        self.content.append(
-            f"""
-                #figure(
-                    image("{image_path}", width: 100%),
-                    caption: [
-                    A step in the molecular testing
-                    pipeline of our lab.
-                    ],
-                )\n
-            """
-        )
+        self.handle_images()
 
     def read_sci_report_data(self) -> SensorData:
         sensor_data: SensorData = {}
@@ -289,6 +294,58 @@ class ReportHandler:
 
     def handle_line_plots(self) -> None: ...
 
+    def handle_images(self) -> None:
+        # read /home/administratror/expeditions/
+        # folder "processed" will have processed ones and "unprocesses" will have unprocessed one
+
+        # read the expedition id's folder if present in unprocessed and raise duplication error if present in processed
+        
+        if self.image_not_available or self.expedition_id is None:
+            self.image_not_available = True
+            return
+
+        if not os.path.exists(f"/home/administratror/expeditions/unprocessed/{self.expedition_id}"):
+            self.image_not_available = True
+            return
+        
+        # mark processed by softlinking
+        os.link(f"/home/administratror/expeditions/unprocessed/{self.expedition_id}", f"/home/administratror/expeditions/processed/{self.expedition_id}")
+
+        for img_file in os.listdir(f"/home/administratror/expeditions/unprocessed/{self.expedition_id}"):
+            if not img_file.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
+                continue
+
+            img_path = os.path.abspath(f"/home/administratror/expeditions/unprocessed/{self.expedition_id}/{img_file}")
+
+            caption = None
+
+            if img_file in self.img_captions:
+                caption = self.img_captions[img_file]
+
+            if caption:
+                self.content.append(
+                    f"""
+                        #figure(
+                            image("{img_path}", width: 100%),
+                            caption: ["{caption}"],
+                        )\n
+                    """
+                )
+            else:
+
+                self.content.append(
+                    f"""
+                        #figure(
+                            image("{img_path}", width: 100%),
+                        )\n
+                    """
+                )
+
+        try:
+            with open(f"/home/administratror/expeditions/processed/{self.expedition_id}/metadata.dat", "w") as meta_f:
+                meta_f.write(f"{self.report_id}\n")
+        except Exception as e:
+            print(f"Failed to write metadata file: {e}")
 
 if __name__ == "__main__":
     rh = ReportHandler(inference="Lil nigga inference")
