@@ -231,25 +231,33 @@ class ReportHandler:
 
         # Convert sensor data for Typst format
         # Always convert to strings to avoid type mismatches in Typst table
-        sensor_dict_str = "(\n"
-        for key, value in sensor_data.items():
-            # Convert all values to strings for consistent display
-            str_value = str(value) if value is not None else "N/A"
-            sensor_dict_str += f'    "{key}": "{str_value}",\n'
-        sensor_dict_str += "  )"
+        # Use (:) for empty dict, not () which is an array
+        if not sensor_data:
+            sensor_dict_str = "(:)"
+        else:
+            sensor_dict_str = "(\n"
+            for key, value in sensor_data.items():
+                # Convert all values to strings for consistent display
+                str_value = str(value) if value is not None else "N/A"
+                sensor_dict_str += f'    "{key}": "{str_value}",\n'
+            sensor_dict_str += "  )"
 
         # Convert image captions for Typst format
-        captions_dict_str = "(\n"
-        for img_file, img_data in image_dict.items():
-            path = img_data["path"]
-            caption = img_data["caption"]
-            if caption:
-                # Escape quotes in caption
-                caption = caption.replace('"', '\\"')
-                captions_dict_str += f'    "{img_file}": "{caption}",\n'
-            else:
-                captions_dict_str += f'    "{img_file}": "",\n'
-        captions_dict_str += "  )"
+        # Use (:) for empty dict, not () which is an array
+        if not image_dict:
+            captions_dict_str = "(:)"
+        else:
+            captions_dict_str = "(\n"
+            for img_file, img_data in image_dict.items():
+                path = img_data["path"]
+                caption = img_data["caption"]
+                if caption:
+                    # Escape quotes in caption
+                    caption = caption.replace('"', '\\"')
+                    captions_dict_str += f'    "{img_file}": "{caption}",\n'
+                else:
+                    captions_dict_str += f'    "{img_file}": "",\n'
+            captions_dict_str += "  )"
 
         # Generate the Typst file using template
         # Use relative path for Typst import (from report_sci_gen/ to template in storage/)
