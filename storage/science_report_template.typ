@@ -28,8 +28,8 @@
     let img-files = images.keys()
     for img-file in img-files {
       let img-data = images.at(img-file)
-      let img-path = img-data.path
-      let caption = img-data.caption
+      let img-path = img-data.at("path")
+      let caption = img-data.at("caption", default: none)
       
       if caption != none {
         figure(

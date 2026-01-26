@@ -244,6 +244,7 @@ class ReportHandler:
 
         # Convert image data for Typst format (paths + captions)
         # Use (:) for empty dict, not () which is an array
+        # Use proper dictionary syntax with quoted keys: ("path": "...", "caption": "...")
         if not image_dict:
             images_dict_str = "(:)"
         else:
@@ -254,10 +255,10 @@ class ReportHandler:
                 # Escape quotes in caption and path
                 if caption:
                     caption_escaped = caption.replace('"', '\\"')
-                    images_dict_str += f'    "{img_file}": (path: "{path}", caption: "{caption_escaped}"),\n'
+                    images_dict_str += f'    "{img_file}": ("path": "{path}", "caption": "{caption_escaped}"),\n'
                 else:
                     images_dict_str += (
-                        f'    "{img_file}": (path: "{path}", caption: none),\n'
+                        f'    "{img_file}": ("path": "{path}", "caption": none),\n'
                     )
             images_dict_str += "  )"
 
