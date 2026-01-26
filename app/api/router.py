@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api import ros_endpoints
 from app.api.arm import available as arm_available
+from app.api.arm import ros_arm
 from app.api.diagnostics import available as dgt_available
 from app.api.diagnostics import doctor
 from app.api.navigation import (
@@ -53,6 +54,7 @@ router.include_router(
 
 # Arm endpoints -> /api/arm/
 router.include_router(arm_available.router, prefix="/api/arm", tags=["arm"])
+router.include_router(ros_arm.router, prefix="/api/arm", tags=["arm", "ros"])
 
 # Other endpoints -> /api/o/
 router.include_router(test.router, prefix="/api/o", tags=["other"])

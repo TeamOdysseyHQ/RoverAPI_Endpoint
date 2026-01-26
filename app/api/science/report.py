@@ -7,12 +7,15 @@ from .report_handler import ReportHandler, DuplicationError, ReportGenerationFai
 router = APIRouter()
 
 # Report directory configuration (can be overridden with environment variables)
+# Default to project-relative paths that work for any user
+_BASE_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 REPORT_OUTPUT_DIR = os.getenv(
-    "SCIENCE_REPORT_OUTPUT_DIR", "/home/administratror/sci_reports_0x1000"
+    "SCIENCE_REPORT_OUTPUT_DIR", os.path.join(_BASE_DIR, "storage", "sci_reports")
 )
 REPORT_SOURCE_DIR = os.getenv(
-    "SCIENCE_REPORT_SOURCE_DIR",
-    "/home/administratror/Projects/RoverAPI_Endpoint/report_sci_gen",
+    "SCIENCE_REPORT_SOURCE_DIR", os.path.join(_BASE_DIR, "storage", "report_sci_gen")
 )
 
 # Ensure directories exist

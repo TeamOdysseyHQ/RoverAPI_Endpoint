@@ -50,7 +50,7 @@ class RosbridgeManager:
         try:
             self.client = roslibpy.Ros(host=self.config.host, port=self.config.port)
             self.client.on_ready(self._on_ready)
-            self.client.on('close', self._on_close)
+            self.client.on("close", self._on_close)
 
             self.client.run()
 
@@ -230,6 +230,119 @@ class RosbridgeManager:
     def get_latest_odom(self) -> Optional[Dict[str, Any]]:
         """Get latest odometry message"""
         return self.get_latest_message(ODOM_TOPIC)
+
+    # ARM convenience methods
+
+    def publish_arm_command(self, command: int) -> bool:
+        """
+        Publish command to arm/command topic.
+
+        Args:
+            command: Command code (1 = drop payload, -1 = emergency stop)
+
+        Returns:
+            True if published successfully
+        """
+        message = {"data": command}
+        return self.publish(ARM_COMMAND_TOPIC, "std_msgs/Int32", message)
+
+    def publish_arm_target(
+        self,
+        dc_elbow: float,
+        dc_wrist_pitch: float,
+        stepper_base_pan: float,
+        stepper_shoulder: float,
+        servo_wrist_roll: float,
+        servo_gripper: float,
+    ) -> bool:
+        """
+        Publish target angles to arm/target topic.
+
+        Args:
+            dc_elbow: Target angle for DC motor 1 (elbow)
+            dc_wrist_pitch: Target angle for DC motor 2 (wrist pitch)
+            stepper_base_pan: Target angle for stepper 1 (base pan)
+            stepper_shoulder: Target angle for stepper 2 (shoulder)
+            servo_wrist_roll: Target angle for servo 1 (wrist roll)
+            servo_gripper: Target angle for servo 2 (gripper)
+
+        Returns:
+            True if published successfully
+        """
+        # ARM expects: [dc0, dc1, stepper0, stepper1, servo0, servo1]
+        message = {
+            "data": [
+                dc_elbow,
+                dc_wrist_pitch,
+                stepper_base_pan,
+                stepper_shoulder,
+                servo_wrist_roll,
+                servo_gripper,
+            ]
+        }
+        return self.publish(ARM_TARGET_TOPIC, "std_msgs/Float32MultiArray", message)
+
+    def subscribe_arm_telemetry(self, callback: Optional[Callable] = None) -> bool:
+        """Subscribe to arm/telemetry topic"""
+        return self.subscribe(ARM_TELEMETRY_TOPIC, "std_msgs/String", callback)
+
+    def get_latest_arm_telemetry(self) -> Optional[Dict[str, Any]]:
+        """
+        Get latest arm telemetry message and parse CSV format.
+
+        Returns parsed telemetry with structure:
+        {
+            "stepper": {"base_pan": float, "shoulder": float},
+            "dc": {"elbow": float, "wrist_pitch": float},
+            "servo": {"wrist_roll": float, "gripper": float},
+            "rc_channels": {"ch1": int, "ch2": int, "ch3": int, "ch4": int, "ch5": int, "ch6": int},
+            "raw": str  # Original CSV string
+        }
+        """
+        raw_message = self.get_latest_message(ARM_TELEMETRY_TOPIC)
+        if raw_message is None:
+            return None
+
+        # Extract CSV string from std_msgs/String message
+        csv_data = raw_message.get("data", "")
+        if not csv_data:
+            return None
+
+        try:
+            # Parse CSV: stepper[0], stepper[1], dc[0], dc[1], servo[0], servo[1], ch1, ch2, ch3, ch4, ch5, ch6
+            values = [float(v.strip()) for v in csv_data.split(",")]
+
+            if len(values) < 12:
+                print(f"Warning: Expected 12 values in telemetry, got {len(values)}")
+                return None
+
+            return {
+                "stepper": {
+                    "base_pan": values[0],
+                    "shoulder": values[1],
+                },
+                "dc": {
+                    "elbow": values[2],
+                    "wrist_pitch": values[3],
+                },
+                "servo": {
+                    "wrist_roll": values[4],
+                    "gripper": values[5],
+                },
+                "rc_channels": {
+                    "ch1": int(values[6]),
+                    "ch2": int(values[7]),
+                    "ch3": int(values[8]),
+                    "ch4": int(values[9]),
+                    "ch5": int(values[10]),
+                    "ch6": int(values[11]),
+                },
+                "raw": csv_data,
+            }
+
+        except (ValueError, IndexError) as e:
+            print(f"Failed to parse arm telemetry CSV: {e}")
+            return None
 
 
 # Global instance

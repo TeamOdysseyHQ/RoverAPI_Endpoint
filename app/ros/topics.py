@@ -13,8 +13,12 @@ CAMERA_IMAGE_PREFIX = "/camera"
 DIAGNOSTICS_TOPIC = "/diagnostics"
 BATTERY_TOPIC = "/battery_state"
 
-# Arm topics
-ARM_JOINT_STATES = "/joint_states"
+# Arm topics (matching micro-ROS topics in ARM/src/RosArmBridge.cpp)
+ARM_TELEMETRY_TOPIC = (
+    "arm/telemetry"  # std_msgs/String - CSV: stepper[2], dc[2], servo[2], ch[6]
+)
+ARM_COMMAND_TOPIC = "arm/command"  # std_msgs/Int32 - Commands: 1=drop, -1=stop
+ARM_TARGET_TOPIC = "arm/target"  # std_msgs/Float32MultiArray - 6 target angles
 
 # Science topics
 SCIENCE_DATA_TOPIC = "/science_sensor_data"

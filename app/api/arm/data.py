@@ -1,21 +1,22 @@
 from fastapi import APIRouter
 from typing import Union
 from app.ros.manager import ros_manager
-from app.ros.topics import ARM_STATUS, ARM_COMMAND_TOPIC
+from app.ros.topics import ARM_TELEMETRY_TOPIC
 import time
-    
+
 router = APIRouter()
 
 ArmSensorData = dict[str, dict[str, Union[str, int, float]]]
 
+
 class SensorDataFetchFailure(Exception):
-    
     def __init__(self, msg: str, *args):
         super().__init__(msg, *args)
         self.msg = msg
-    
+
     def __str__(self):
         return f"Failed to obtain sensor data: {self.msg}"
+
 
 def arm_data_handler():
     sensor_data: ArmSensorData = {}
@@ -23,55 +24,47 @@ def arm_data_handler():
 
     if not ros_manager.is_connected:
         raise SensorDataFetchFailure("Not connected to ROS. Cannot fetch arm data.")
-    
-    if ARM_STATUS not in ros_manager._subscribers:
-        success = ros_manager.subscribe(ARM_STATUS, "std_msgs/Float32MultiArray")
+
+    if ARM_TELEMETRY_TOPIC not in ros_manager._subscribers:
+        success = ros_manager.subscribe_arm_telemetry()
         if not success:
-            raise SensorDataFetchFailure(f"Failed to subscribe to {ARM_STATUS}")
-            
+            raise SensorDataFetchFailure(
+                f"Failed to subscribe to {ARM_TELEMETRY_TOPIC}"
+            )
+
     time.sleep(0.5)
-    data = ros_manager.get_latest_message(ARM_STATUS)
+    data = ros_manager.get_latest_arm_telemetry()
 
     if data is None:
         time.sleep(1.0)
-        data = ros_manager.get_latest_message(ARM_STATUS)
-        
+        data = ros_manager.get_latest_arm_telemetry()
+
         if data is None:
             raise SensorDataFetchFailure("No data received from arm.")
-        
-    data = data["data"]  # Dict access, not attribute
-    
-    joint_1_servo = data[0]
-    joint_2_servo = data[1]
 
-    joint_1_dc = data[2]
-    joint_2_dc = data[3]
-
-    joint_1_stepper = data[4]
-    joint_2_stepper = data[5]
-
-    # servo, dc, stepper
+    # Data is already parsed by ros_manager.get_latest_arm_telemetry()
+    # Format: {"stepper": {...}, "dc": {...}, "servo": {...}, "rc_channels": {...}}
 
     sensor_data = {
         "servo": {
-            "joint_1_angle": joint_1_servo,
-            "joint_2_angle": joint_2_servo,
+            "wrist_roll": data["servo"]["wrist_roll"],
+            "gripper": data["servo"]["gripper"],
         },
         "dc": {
-            "joint_1_angle": joint_1_dc,
-            "joint_2_angle": joint_2_dc,
+            "elbow": data["dc"]["elbow"],
+            "wrist_pitch": data["dc"]["wrist_pitch"],
         },
         "stepper": {
-            "joint_1_angle": joint_1_stepper,
-            "joint_2_angle": joint_2_stepper,
-        }
+            "base_pan": data["stepper"]["base_pan"],
+            "shoulder": data["stepper"]["shoulder"],
+        },
     }
 
     return sensor_data
 
+
 @router.post("/data")
 async def arm_data():
-
     try:
         data = arm_data_handler()
         return {
