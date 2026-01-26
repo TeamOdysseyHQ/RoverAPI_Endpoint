@@ -21,6 +21,19 @@ def sci_avi_l_ret() -> listOfStrings:
         "microscope/stream",
         "microscope/stream/ws",
         "microscope/capture",
+        "sensor_data",
+        "control/enable",
+        "control/linear_actuator",
+        "control/drill",
+        "control/barrel",
+        "control/servo",
+        "control/command",
+        "control/status",
+        "drill/subscribe",
+        "drill/data",
+        "warnings/subscribe",
+        "warnings",
+        "warnings/codes",
     ]
 
 

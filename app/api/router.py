@@ -22,6 +22,8 @@ from app.api.science import available as sci_available
 from app.api.science import report as sci_reports
 from app.api.science import sensor_data as sci_sensor_data
 from app.api.science import microscope, microscope_ws
+from app.api.science import control as sci_control
+from app.api.science import drill_data as sci_drill_data
 
 # Create main router
 router = APIRouter()
@@ -50,6 +52,12 @@ router.include_router(
 )
 router.include_router(
     microscope_ws.router, prefix="/api/sci", tags=["science", "microscope", "websocket"]
+)
+router.include_router(
+    sci_control.router, prefix="/api/sci", tags=["science", "control", "ros"]
+)
+router.include_router(
+    sci_drill_data.router, prefix="/api/sci", tags=["science", "drill", "ros"]
 )
 
 # Arm endpoints -> /api/arm/

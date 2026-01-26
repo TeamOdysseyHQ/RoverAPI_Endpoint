@@ -344,6 +344,103 @@ class RosbridgeManager:
             print(f"Failed to parse arm telemetry CSV: {e}")
             return None
 
+    # SCIENCE convenience methods
+
+    def publish_science_control(
+        self,
+        linear_actuator_cmd: int = -6,
+        drill_cmd: int = -6,
+        barrel_cmd: int = -6,
+        servo_toggle: bool = False,
+        science_module_toggle: bool = False,
+    ) -> bool:
+        """
+        Publish control command to science module.
+
+        Args:
+            linear_actuator_cmd: -1=down, 1=up, 0/4/8/16=microstep modes, -6=no command
+            drill_cmd: -2=CW, -1=decrease speed, 0=stop, 1=increase speed, 2=CCW, -6=no command
+            barrel_cmd: 1=rotate 60°, 0/4/8/16=microstep modes, -6=no command
+            servo_toggle: Toggle PH servo position
+            science_module_toggle: Enable/disable science exploration mode
+
+        Returns:
+            True if published successfully
+        """
+        message = {
+            "data": [
+                linear_actuator_cmd,
+                drill_cmd,
+                barrel_cmd,
+                1 if servo_toggle else 0,
+                1 if science_module_toggle else 0,
+            ]
+        }
+        return self.publish(SCIENCE_CONTROL_TOPIC, "std_msgs/Int32MultiArray", message)
+
+    def subscribe_drill_data(self, callback: Optional[Callable] = None) -> bool:
+        """Subscribe to drill telemetry topic (distance, IMU, current)"""
+        return self.subscribe(
+            SCIENCE_DRILL_DATA_TOPIC, "std_msgs/Float32MultiArray", callback
+        )
+
+    def get_latest_drill_data(self) -> Optional[Dict[str, Any]]:
+        """
+        Get latest drill telemetry message and parse Float32MultiArray.
+
+        Returns parsed drill data with structure:
+        {
+            "drill_halted": bool,
+            "distance_mm": float,
+            "accelerometer": {"x": float, "y": float, "z": float},
+            "gyroscope": {"x": float, "y": float, "z": float}
+        }
+        """
+        raw_message = self.get_latest_message(SCIENCE_DRILL_DATA_TOPIC)
+        if raw_message is None:
+            return None
+
+        data = raw_message.get("data", [])
+        if len(data) < 8:
+            print(f"Warning: Expected 8 values in drill data, got {len(data)}")
+            return None
+
+        return {
+            "drill_halted": bool(data[0]),
+            "distance_mm": float(data[1]),
+            "accelerometer": {
+                "x": float(data[2]),
+                "y": float(data[3]),
+                "z": float(data[4]),
+            },
+            "gyroscope": {
+                "x": float(data[5]),
+                "y": float(data[6]),
+                "z": float(data[7]),
+            },
+        }
+
+    def subscribe_science_warnings(self, callback: Optional[Callable] = None) -> bool:
+        """Subscribe to science info/warning codes"""
+        return self.subscribe(SCIENCE_INFO_WARNING_TOPIC, "std_msgs/Int32", callback)
+
+    def get_latest_science_warning(self) -> Optional[int]:
+        """
+        Get latest science warning code.
+
+        Warning codes:
+        1 = Start drilling
+        2 = Stop drilling (depth limit reached)
+        3 = Shake detected
+        4 = Current threshold 1 exceeded
+        5 = Current threshold 2 exceeded (drill auto-stopped)
+        """
+        raw_message = self.get_latest_message(SCIENCE_INFO_WARNING_TOPIC)
+        if raw_message is None:
+            return None
+
+        return raw_message.get("data")
+
 
 # Global instance
 ros_manager = RosbridgeManager()
