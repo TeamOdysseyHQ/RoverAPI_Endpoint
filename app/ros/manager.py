@@ -372,7 +372,8 @@ class RosbridgeManager:
                 linear_actuator_cmd,
                 drill_cmd,
                 barrel_cmd,
-                1 if servo_toggle else 0,
+                # IF DROP THE TEST TUBE button is pressed, send 2 in servo toggle position
+                (1 if servo_toggle else 0) if (linear_actuator_cmd or drill_cmd or barrel_cmd) != -6 else -6,
                 1 if science_module_toggle else 0,
             ]
         }
