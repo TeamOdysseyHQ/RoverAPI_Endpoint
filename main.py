@@ -27,16 +27,16 @@ app.include_router(router)
 @app.on_event("startup")
 async def startup_event():
     """Initialize ROS bridge connection on startup"""
-    print("🚀 Starting Rover API Server...")
+    print("Starting Rover API Server...")
 
     # Connect to rosbridge in a separate thread to avoid blocking startup
     def connect_ros():
-        print("🔌 Attempting to connect to rosbridge_server...")
+        print("Attempting to connect to rosbridge_server...")
         success = ros_manager.connect()
         if success:
-            print(f"✓ Successfully connected to rosbridge at {ros_manager.config.url}")
+            print(f"Successfully connected to rosbridge at {ros_manager.config.url}")
         else:
-            print(f"✗ Failed to connect to rosbridge at {ros_manager.config.url}")
+            print(f"ERROR: Failed to connect to rosbridge at {ros_manager.config.url}")
             print(
                 "  ROS endpoints will not be available until connection is established."
             )
@@ -52,7 +52,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Disconnect from ROS bridge on shutdown"""
-    print("🛑 Shutting down Rover API Server...")
+    print("Shutting down Rover API Server...")
     if ros_manager.is_connected:
         ros_manager.disconnect()
         print("✓ Disconnected from rosbridge")
