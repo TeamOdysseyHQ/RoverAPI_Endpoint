@@ -3,6 +3,7 @@ from typing import Optional, Union
 import time
 import datetime
 import os
+import shutil
 import uuid
 import subprocess
 from app.ros.manager import ros_manager
@@ -26,6 +27,7 @@ os.makedirs(REPORT_SOURCE_DIR, exist_ok=True)
 
 SensorData = dict[str, Union[str, int, float]]
 
+
 class DuplicationError(Exception):
     def __init__(self, msg: str, *args):
         super().__init__(msg, *args)
@@ -45,9 +47,13 @@ class ReportGenerationFailure(Exception):
 
 
 class ReportHandler:
-    def __init__(self, filename: Optional[str] = None, inference: Optional[str] = None, expedition_id: Optional[str] = None,
-        img_captions: Optional[dict[str, str]] = {}):
-    
+    def __init__(
+        self,
+        filename: Optional[str] = None,
+        inference: Optional[str] = None,
+        expedition_id: Optional[str] = None,
+        img_captions: Optional[dict[str, str]] = {},
+    ):
         self.content: list[str] = []
         self.filename = filename
         self.image_not_available = False
@@ -104,11 +110,18 @@ class ReportHandler:
     def _validate_expedition_id(self) -> None:
         if self.expedition_id is None:
             return
-            
-        if os.path.exists(f"/home/administratror/expeditions/processed/{self.expedition_id}"):
+
+        if os.path.exists(
+            f"/home/administratror/expeditions/processed/{self.expedition_id}"
+        ):
             raise DuplicationError("Expedition ID already exists.")
 
-    def create_report(self, inference: Optional[str] = None, expedition_id: Optional[str] = None, force_gen: Optional[bool] = False) -> str:
+    def create_report(
+        self,
+        inference: Optional[str] = None,
+        expedition_id: Optional[str] = None,
+        force_gen: Optional[bool] = False,
+    ) -> str:
         if not self.inference:
             self.inference = inference
 
@@ -173,7 +186,6 @@ class ReportHandler:
         self.handle_images()
 
     def format_methodology(self) -> None:
-
         self.content.append(
             f"""
             
@@ -206,7 +218,7 @@ class ReportHandler:
                 ]\n
             """
         )
-        
+
         self.content.append(
             f"""
             
@@ -320,7 +332,7 @@ class ReportHandler:
             ]\n
             """
         )
-        
+
     def read_sci_report_data(self) -> SensorData:
         sensor_data: SensorData = {}
         # fetch sensor data
@@ -368,7 +380,7 @@ class ReportHandler:
         lon = data[12]
         dist = data[13]
 
-        # removed: 
+        # removed:
         # "cs_tcs_34725": f"Colourless: {'Yes' if colourless else 'No'}  Purple: {'Yes' if purple else 'No'}",
 
         sensor_data = {
@@ -452,23 +464,37 @@ class ReportHandler:
         # folder "processed" will have processed ones and "unprocesses" will have unprocessed one
 
         # read the expedition id's folder if present in unprocessed and raise duplication error if present in processed
-        
+
         if self.image_not_available or self.expedition_id is None:
             self.image_not_available = True
             return
 
-        if not os.path.exists(f"/home/administratror/expeditions/unprocessed/{self.expedition_id}"):
+        if not os.path.exists(
+            f"/home/administratror/expeditions/unprocessed/{self.expedition_id}"
+        ):
             self.image_not_available = True
             return
-        
-        # mark processed by softlinking
-        os.link(f"/home/administratror/expeditions/unprocessed/{self.expedition_id}", f"/home/administratror/expeditions/processed/{self.expedition_id}")
 
-        for img_file in os.listdir(f"/home/administratror/expeditions/unprocessed/{self.expedition_id}"):
+        # mark processed by copying the directory
+        # Cannot use os.link() for directories - use copytree instead
+        try:
+            shutil.copytree(
+                f"/home/administratror/expeditions/unprocessed/{self.expedition_id}",
+                f"/home/administratror/expeditions/processed/{self.expedition_id}",
+            )
+        except Exception as e:
+            print(f"Warning: Failed to copy expedition directory: {e}")
+            # Continue anyway - we can still use files from unprocessed
+
+        for img_file in os.listdir(
+            f"/home/administratror/expeditions/unprocessed/{self.expedition_id}"
+        ):
             if not img_file.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
                 continue
 
-            img_path = os.path.abspath(f"/home/administratror/expeditions/unprocessed/{self.expedition_id}/{img_file}")
+            img_path = os.path.abspath(
+                f"/home/administratror/expeditions/unprocessed/{self.expedition_id}/{img_file}"
+            )
 
             caption = None
 
@@ -485,7 +511,6 @@ class ReportHandler:
                     """
                 )
             else:
-
                 self.content.append(
                     f"""
                         #figure(
@@ -495,10 +520,14 @@ class ReportHandler:
                 )
 
         try:
-            with open(f"/home/administratror/expeditions/processed/{self.expedition_id}/metadata.dat", "w") as meta_f:
+            with open(
+                f"/home/administratror/expeditions/processed/{self.expedition_id}/metadata.dat",
+                "w",
+            ) as meta_f:
                 meta_f.write(f"{self.report_id}\n")
         except Exception as e:
             print(f"Failed to write metadata file: {e}")
+
 
 if __name__ == "__main__":
     rh = ReportHandler(inference="Lil nigga inference")
