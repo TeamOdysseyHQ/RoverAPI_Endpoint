@@ -230,12 +230,12 @@ class ReportHandler:
                 image_captions[img_file] = img_data["caption"]
 
         # Convert sensor data for Typst format
+        # Always convert to strings to avoid type mismatches in Typst table
         sensor_dict_str = "(\n"
         for key, value in sensor_data.items():
-            if isinstance(value, str):
-                sensor_dict_str += f'    "{key}": "{value}",\n'
-            else:
-                sensor_dict_str += f'    "{key}": {value},\n'
+            # Convert all values to strings for consistent display
+            str_value = str(value) if value is not None else "N/A"
+            sensor_dict_str += f'    "{key}": "{str_value}",\n'
         sensor_dict_str += "  )"
 
         # Convert image captions for Typst format
