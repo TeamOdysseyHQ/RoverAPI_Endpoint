@@ -131,10 +131,11 @@ async def sci_reports(request: Request):
     
     img_captions: dict[str, str] = data.get("image_captions", {})
     expedition_id: int | None = data.get("expedition_id", None)
+    force_generate: bool = data.get("force_generate", False)
 
     try:
         rh_handler = ReportHandler(expedition_id=expedition_id, img_captions=img_captions)
-        rid, report_path = rh_handler.create_report(data["inference"])
+        rid, report_path = rh_handler.create_report(data["inference"], force_gen=force_generate)
 
         if not report_path:
             return {

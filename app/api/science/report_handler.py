@@ -108,7 +108,7 @@ class ReportHandler:
         if os.path.exists(f"/home/administratror/expeditions/processed/{self.expedition_id}"):
             raise DuplicationError("Expedition ID already exists.")
 
-    def create_report(self, inference: Optional[str] = None, expedition_id: Optional[str] = None) -> str:
+    def create_report(self, inference: Optional[str] = None, expedition_id: Optional[str] = None, force_gen: Optional[bool] = False) -> str:
         if not self.inference:
             self.inference = inference
 
@@ -122,12 +122,14 @@ class ReportHandler:
         self._validate_expedition_id()
         self.format_header()
 
+        self.format_methodology()
+
         try:
             self.handle_sensor_data()
         except Exception as e:
             self.data_not_available = True
 
-        if self.data_not_available and self.image_not_available:
+        if self.data_not_available and self.image_not_available and not force_gen:
             raise ReportGenerationFailure("Data and Image unavailable. Request denied!")
 
         self.handle_inferences(inference=inference)
