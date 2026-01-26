@@ -250,12 +250,11 @@ class ReportHandler:
         captions_dict_str += "  )"
 
         # Generate the Typst file using template
-        template_path = os.path.join(
-            _BASE_DIR, "storage", "science_report_template.typ"
-        )
+        # Use relative path for Typst import (from report_sci_gen/ to template in storage/)
+        template_relative_path = "../science_report_template.typ"
 
         typst_content = f"""
-#import "{template_path}": generate-report
+#import "{template_relative_path}": generate-report
 
 #generate-report(
   date: "{self.date}",
