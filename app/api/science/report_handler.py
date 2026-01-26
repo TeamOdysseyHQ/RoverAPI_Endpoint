@@ -242,22 +242,24 @@ class ReportHandler:
                 sensor_dict_str += f'    "{key}": "{str_value}",\n'
             sensor_dict_str += "  )"
 
-        # Convert image captions for Typst format
+        # Convert image data for Typst format (paths + captions)
         # Use (:) for empty dict, not () which is an array
         if not image_dict:
-            captions_dict_str = "(:)"
+            images_dict_str = "(:)"
         else:
-            captions_dict_str = "(\n"
+            images_dict_str = "(\n"
             for img_file, img_data in image_dict.items():
                 path = img_data["path"]
                 caption = img_data["caption"]
+                # Escape quotes in caption and path
                 if caption:
-                    # Escape quotes in caption
-                    caption = caption.replace('"', '\\"')
-                    captions_dict_str += f'    "{img_file}": "{caption}",\n'
+                    caption_escaped = caption.replace('"', '\\"')
+                    images_dict_str += f'    "{img_file}": (path: "{path}", caption: "{caption_escaped}"),\n'
                 else:
-                    captions_dict_str += f'    "{img_file}": "",\n'
-            captions_dict_str += "  )"
+                    images_dict_str += (
+                        f'    "{img_file}": (path: "{path}", caption: none),\n'
+                    )
+            images_dict_str += "  )"
 
         # Generate the Typst file using template
         # Use relative path for Typst import (from report_sci_gen/ to template in storage/)
@@ -271,10 +273,9 @@ class ReportHandler:
   time: "{self.time}",
   altitude: 1010,
   expedition-id: {"none" if self.expedition_id is None else f'"{self.expedition_id}"'},
-  expedition-path: "{expedition_path}",
   sensor-data: {sensor_dict_str},
   inference: "{self.inference if self.inference else "No inference provided"}",
-  image-captions: {captions_dict_str},
+  images: {images_dict_str},
 )
 """
 

@@ -13,10 +13,9 @@
   time: "",
   altitude: 0,
   expedition-id: none,
-  expedition-path: "",
   sensor-data: (:),
   inference: "",
-  image-captions: (:),
+  images: (:),
 ) = {
   
   // Header
@@ -24,12 +23,13 @@
   
   [Altitude (From the sea level) - #altitude m]
   
-  // Images section - dynamically loaded
-  if expedition-id != none and expedition-path != "" {
-    let img-files = image-captions.keys()
+  // Images section - using paths provided by Python
+  if images.keys().len() > 0 {
+    let img-files = images.keys()
     for img-file in img-files {
-      let img-path = expedition-path + "/" + img-file
-      let caption = image-captions.at(img-file, default: none)
+      let img-data = images.at(img-file)
+      let img-path = img-data.path
+      let caption = img-data.caption
       
       if caption != none {
         figure(
