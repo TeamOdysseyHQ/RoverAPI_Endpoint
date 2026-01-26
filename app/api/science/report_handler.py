@@ -190,14 +190,17 @@ class ReportHandler:
         # Generate the Typst report using template
         self._generate_typst_report(sensor_data, image_dict, expedition_path)
 
-        # Compile Typst to PDF with --root pointing to storage directory
-        # This allows #import "../template.typ" to work
+        # Compile Typst to PDF
+        # Run from report_sci_gen directory so relative imports work
+        # Use --root / to allow absolute paths to expedition images
         try:
+            report_filename = os.path.basename(self.fileloc)
             res = subprocess.run(
-                ["typst", "compile", "--root", STORAGE_ROOT, self.fileloc],
+                ["typst", "compile", "--root", "/", report_filename],
                 capture_output=True,
                 text=True,
                 check=True,
+                cwd=REPORT_SOURCE_DIR,  # Run from storage/report_sci_gen/
             )
         except subprocess.CalledProcessError as cpe:
             raise ReportGenerationFailure(
