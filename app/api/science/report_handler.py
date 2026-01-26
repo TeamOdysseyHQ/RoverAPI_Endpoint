@@ -14,6 +14,7 @@ from app.ros.topics import SCIENCE_DATA_TOPIC
 _BASE_DIR = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
+STORAGE_ROOT = os.path.join(_BASE_DIR, "storage")
 REPORT_OUTPUT_DIR = os.getenv(
     "SCIENCE_REPORT_OUTPUT_DIR", os.path.join(_BASE_DIR, "storage", "sci_reports")
 )
@@ -189,10 +190,11 @@ class ReportHandler:
         # Generate the Typst report using template
         self._generate_typst_report(sensor_data, image_dict, expedition_path)
 
-        # Compile Typst to PDF
+        # Compile Typst to PDF with --root pointing to storage directory
+        # This allows #import "../template.typ" to work
         try:
             res = subprocess.run(
-                ["typst", "compile", self.fileloc],
+                ["typst", "compile", "--root", STORAGE_ROOT, self.fileloc],
                 capture_output=True,
                 text=True,
                 check=True,
