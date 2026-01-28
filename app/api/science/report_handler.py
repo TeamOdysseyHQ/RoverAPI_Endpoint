@@ -27,7 +27,7 @@ os.makedirs(REPORT_OUTPUT_DIR, exist_ok=True)
 os.makedirs(REPORT_SOURCE_DIR, exist_ok=True)
 
 SensorData = dict[str, Union[str, int, float]]
-
+IMAGE_DICT_TYPE = dict[str, dict[str, dict[str, str]]]
 
 class DuplicationError(Exception):
     def __init__(self, msg: str, *args):
@@ -148,7 +148,23 @@ class ReportHandler:
 
         # Prepare image data from expedition directory
         expedition_path = ""
-        image_dict = {}
+        image_dict: IMAGE_DICT_TYPE = {
+            "rover": {
+
+            },
+            "arm": {
+
+            },
+            "science": {
+
+            },
+            "microscope": {
+
+            },
+            "others": {
+
+            }
+        }
 
         if self.expedition_id is not None:
             expedition_path = (
@@ -170,12 +186,29 @@ class ReportHandler:
                         (".png", ".jpg", ".jpeg", ".bmp", ".gif")
                     ):
                         # Store absolute path and caption
-                        image_dict[img_file] = {
-                            "path": os.path.abspath(
-                                os.path.join(expedition_path, img_file)
-                            ),
-                            "caption": self.img_captions.get(img_file, ""),
-                        }
+                        # So, images have the format: filename = f"{timestamp}_{camera_name}_capture.jpg"
+
+                        camera_name_fetched: str = img_file.split("_")[2] # 0 is ts and 1 is ts's decimal, 2 is cam name and 3 is capture.jpg
+
+                        if camera_name_fetched not in ["rover", "arm", "science", "microscope"]:
+                            # put in others
+                            image_dict["others"][img_file] = {
+                                "path": os.path.abspath(
+                                    os.path.join(expedition_path, img_file)
+                                ),
+                                "caption": self.img_captions.get(img_file, ""),
+                            }
+                        else:
+
+                            if camera_name_fetched not in image_dict.keys():
+                                camera_name_fetched = "others"
+
+                            image_dict[camera_name_fetched][img_file] = {
+                                "path": os.path.abspath(
+                                    os.path.join(expedition_path, img_file)
+                                ),
+                                "caption": self.img_captions.get(img_file, ""),
+                            }
 
                 # Write metadata linking expedition to report
                 try:
@@ -221,16 +254,17 @@ class ReportHandler:
     def _generate_typst_report(
         self,
         sensor_data: dict[str, Union[str, int, float]],
-        image_dict: dict[str, dict[str, str]],
+        image_dict: IMAGE_DICT_TYPE,
         expedition_path: str,
     ) -> None:
         """Generate Typst report using the template-based approach"""
 
         # Build image captions dictionary for Typst
         image_captions = {}
-        for img_file, img_data in image_dict.items():
-            if img_data["caption"]:
-                image_captions[img_file] = img_data["caption"]
+        for camera_name, images in image_dict.items():
+            for img_file, img_data in images.items():
+                if img_data["caption"]:
+                    image_captions[img_file] = img_data["caption"]
 
         # Convert sensor data for Typst format
         # Always convert to strings to avoid type mismatches in Typst table
@@ -248,26 +282,114 @@ class ReportHandler:
         # Convert image data for Typst format (paths + captions)
         # Use (:) for empty dict, not () which is an array
         # Use proper dictionary syntax with quoted keys: ("path": "...", "caption": "...")
-        if not image_dict:
-            images_dict_str = "(:)"
-        else:
-            images_dict_str = "(\n"
-            for img_file, img_data in image_dict.items():
-                path = img_data["path"]
-                caption = img_data["caption"]
-                # Escape quotes in caption and path
-                if caption:
-                    caption_escaped = caption.replace('"', '\\"')
-                    images_dict_str += f'    "{img_file}": ("path": "{path}", "caption": "{caption_escaped}"),\n'
-                else:
-                    images_dict_str += (
-                        f'    "{img_file}": ("path": "{path}", "caption": none),\n'
-                    )
-            images_dict_str += "  )"
+
+        #   images_rover: (:),
+        # images_arm: (:),
+        # images_science: (:),
+        # images_microscope: (:),
+        # images_others: (:),
+
+        rover_image_dict_str = ""
+        arm_image_dict_str = ""
+        science_image_dict_str = ""
+        microscope_image_dict_str = ""
+        others_image_dict_str = ""
+
+        tmp_image_dict: dict[str, dict[str, str]] = {}
+        for cam_name, images in image_dict.items():
+
+            tmp_image_dict = image_dict.get(cam_name, {})
+            if not tmp_image_dict:
+
+                if cam_name == "rover":
+                    rover_image_dict_str = "(:)"
+                elif cam_name == "arm":
+                    arm_image_dict_str = "(:)"
+                elif cam_name == "science":
+                    science_image_dict_str = "(:)"
+                elif cam_name == "microscope":
+                    microscope_image_dict_str = "(:)"
+                elif cam_name == "others":
+                    others_image_dict_str = "(:)"
+
+            else:
+
+                if cam_name == "rover":
+                    rover_image_dict_str = "(\n"
+                    for img_file, img_data in tmp_image_dict.items():
+                        path = img_data["path"]
+                        caption = img_data["caption"]
+                        # Escape quotes in caption and path
+                        if caption:
+                            caption_escaped = caption.replace('"', '\\"')
+                            rover_image_dict_str += f'    "{img_file}": ("path": "{path}", "caption": "{caption_escaped}"),\n'
+                        else:
+                            rover_image_dict_str += (
+                                f'    "{img_file}": ("path": "{path}", "caption": none),\n'
+                            )
+                    rover_image_dict_str += "  )"
+                elif cam_name == "arm":
+                    arm_image_dict_str = "(\n"
+                    for img_file, img_data in tmp_image_dict.items():
+                        path = img_data["path"]
+                        caption = img_data["caption"]
+                        # Escape quotes in caption and path
+                        if caption:
+                            caption_escaped = caption.replace('"', '\\"')
+                            arm_image_dict_str += f'    "{img_file}": ("path": "{path}", "caption": "{caption_escaped}"),\n'
+                        else:
+                            arm_image_dict_str += (
+                                f'    "{img_file}": ("path": "{path}", "caption": none),\n'
+                            )
+                    arm_image_dict_str += "  )"
+                elif cam_name == "science":
+                    science_image_dict_str = "(\n"
+                    for img_file, img_data in tmp_image_dict.items():
+                        path = img_data["path"]
+                        caption = img_data["caption"]
+                        # Escape quotes in caption and path
+                        if caption:
+                            caption_escaped = caption.replace('"', '\\"')
+                            science_image_dict_str += f'    "{img_file}": ("path": "{path}", "caption": "{caption_escaped}"),\n'
+                        else:
+                            science_image_dict_str += (
+                                f'    "{img_file}": ("path": "{path}", "caption": none),\n'
+                            )
+                    science_image_dict_str += "  )"
+                elif cam_name == "microscope":
+                    microscope_image_dict_str = "(\n"
+                    for img_file, img_data in tmp_image_dict.items():
+                        path = img_data["path"]
+                        caption = img_data["caption"]
+                        # Escape quotes in caption and path
+                        if caption:
+                            caption_escaped = caption.replace('"', '\\"')
+                            microscope_image_dict_str += f'    "{img_file}": ("path": "{path}", "caption": "{caption_escaped}"),\n'
+                        else:
+                            microscope_image_dict_str += (
+                                f'    "{img_file}": ("path": "{path}", "caption": none),\n'
+                            )
+                    microscope_image_dict_str += "  )"
+                elif cam_name == "others":
+                    others_image_dict_str = "(\n"
+                    for img_file, img_data in tmp_image_dict.items():
+                        path = img_data["path"]
+                        caption = img_data["caption"]
+                        # Escape quotes in caption and path
+                        if caption:
+                            caption_escaped = caption.replace('"', '\\"')
+                            others_image_dict_str += f'    "{img_file}": ("path": "{path}", "caption": "{caption_escaped}"),\n'
+                        else:
+                            others_image_dict_str += (
+                                f'    "{img_file}": ("path": "{path}", "caption": none),\n'
+                            )
+                    others_image_dict_str += "  )"
 
         # Generate the Typst file using template
         # Use relative path for Typst import (from report_sci_gen/ to template in storage/)
-        template_relative_path = "../science_report_template.typ"
+#        template_relative_path = "../science_report_template.typ"
+        template_relative_path = "/home/administratror/Projects/RoverAPI_Endpoint/storage/science_report_template.typ" # not relative btw
+
 
         typst_content = f"""
 #import "{template_relative_path}": generate-report
@@ -279,7 +401,11 @@ class ReportHandler:
   expedition-id: {"none" if self.expedition_id is None else f'"{self.expedition_id}"'},
   sensor-data: {sensor_dict_str},
   inference: "{self.inference if self.inference else "No inference provided"}",
-  images: {images_dict_str},
+  images_rover: {rover_image_dict_str},
+  images_arm: {arm_image_dict_str},
+  images_science: {science_image_dict_str},
+  images_microscope: {microscope_image_dict_str},
+  images_others: {others_image_dict_str},
 )
 """
 

@@ -15,7 +15,11 @@
   expedition-id: none,
   sensor-data: (:),
   inference: "",
-  images: (:),
+  images_rover: (:),
+  images_arm: (:),
+  images_science: (:),
+  images_microscope: (:),
+  images_others: (:),
 ) = {
   
   // Header
@@ -24,10 +28,39 @@
   [Altitude (From the sea level) - #altitude m]
   
   // Images section - using paths provided by Python
-  if images.keys().len() > 0 {
-    let img-files = images.keys()
+
+  [= Images Collected During Expedition]
+
+  if images_rover.keys().len() > 0 {
+
+    [== Rover Camera Images]
+
+    let img-files = images_rover.keys()
     for img-file in img-files {
-      let img-data = images.at(img-file)
+      let img-data = images_rover.at(img-file)
+      let img-path = img-data.at("path")
+      let caption = img-data.at("caption", default: none)
+      
+      if caption != none {
+        figure(
+          image(img-path, width: 100%),
+          caption: [#caption],
+        )
+      } else {
+        figure(
+          image(img-path, width: 100%),
+        )
+      }
+    }
+  }
+
+  if images_arm.keys().len() > 0 {
+
+    [== Arm Camera Images]
+
+    let img-files = images_arm.keys()
+    for img-file in img-files {
+      let img-data = images_arm.at(img-file)
       let img-path = img-data.at("path")
       let caption = img-data.at("caption", default: none)
       
@@ -44,6 +77,75 @@
     }
   }
   
+  if images_science.keys().len() > 0 {
+
+    [== Science Camera Images]
+
+    let img-files = images_science.keys()
+    for img-file in img-files {
+      let img-data = images_science.at(img-file)
+      let img-path = img-data.at("path")
+      let caption = img-data.at("caption", default: none)
+      
+      if caption != none {
+        figure(
+          image(img-path, width: 100%),
+          caption: [#caption],
+        )
+      } else {
+        figure(
+          image(img-path, width: 100%),
+        )
+      }
+    }
+  }
+
+  if images_microscope.keys().len() > 0 {
+
+    [== Microscope Camera Images]
+
+    let img-files = images_microscope.keys()
+    for img-file in img-files {
+      let img-data = images_microscope.at(img-file)
+      let img-path = img-data.at("path")
+      let caption = img-data.at("caption", default: none)
+      
+      if caption != none {
+        figure(
+          image(img-path, width: 100%),
+          caption: [#caption],
+        )
+      } else {
+        figure(
+          image(img-path, width: 100%),
+        )
+      }
+    }
+  }
+
+  if images_others.keys().len() > 0 {
+
+    [== Other/Unresolved camera Images]
+
+    let img-files = images_others.keys()
+    for img-file in img-files {
+      let img-data = images_others.at(img-file)
+      let img-path = img-data.at("path")
+      let caption = img-data.at("caption", default: none)
+      
+      if caption != none {
+        figure(
+          image(img-path, width: 100%),
+          caption: [#caption],
+        )
+      } else {
+        figure(
+          image(img-path, width: 100%),
+        )
+      }
+    }
+  }
+
   // Methodology sections
   [=== Helical Auger Drill Mechanism]
   
