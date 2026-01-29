@@ -1,11 +1,14 @@
 // Science Report Template for Mars Rover
-// This template dynamically queries images from expedition directories
+// This temp
 
 // Import system module for file operations
 #let read-dir(path) = {
   // This is a placeholder - Typst will use actual directory listing
   // We'll pass the image list from Python instead
 }
+
+#show heading: set text(font: "GFS Didot")
+#show text: set text(font: "GFS Didot")
 
 // Main report function
 #let generate-report(
@@ -23,6 +26,24 @@
 ) = {
   
   // Header
+
+  [
+    #grid(
+      columns: (auto, auto), // Fits the width of the image and text
+      gutter: 10pt,          // Adds space between the logo and the text
+      align: horizon,        // Aligns both items vertically in the middle
+      image("logo.png", width: 40pt),
+      text(font: "Noto Sans", weight: "bold", size: 16pt)[
+        Team \
+        Odyssey
+      ]
+    )
+  ]
+  
+  line(length: 100%)
+  
+  text(size: 24pt, weight: "bold")[AbEx Report]
+
   [= Date: #date, Time: #time]
   
   [Altitude (From the sea level) - #altitude m]
@@ -125,7 +146,7 @@
 
   if images_others.keys().len() > 0 {
 
-    [== Other/Unresolved camera Images]
+    [== Other/Unresolved camera Images] 
 
     let img-files = images_others.keys()
     for img-file in img-files {

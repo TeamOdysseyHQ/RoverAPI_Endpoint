@@ -67,8 +67,6 @@ class ReportHandler:
 
         self.img_captions = img_captions if img_captions is not None else {}
 
-        self._validate_expedition_id()
-
         while os.path.exists(os.path.join(REPORT_OUTPUT_DIR, f"{self.report_id}.typ")):
             self.report_id = str(uuid.uuid4()).replace("-", "")  # very rare collision
 
@@ -109,15 +107,6 @@ class ReportHandler:
             print(f"Failed to open file: {ioe.__str__()}")
             raise ReportGenerationFailure(f"Failed to open file: {ioe.__str__()}")
 
-    def _validate_expedition_id(self) -> None:
-        if self.expedition_id is None:
-            return
-
-        if os.path.exists(
-            f"/home/administratror/expeditions/processed/{self.expedition_id}"
-        ):
-            raise DuplicationError("Expedition ID already exists.")
-
     def create_report(
         self,
         inference: Optional[str] = None,
@@ -133,8 +122,6 @@ class ReportHandler:
         if self.expedition_id is None:
             # no eid = assume no images.
             self.image_not_available = True
-
-        self._validate_expedition_id()
 
         # Collect sensor data
         sensor_data: dict[str, Union[str, int, float]] = {}
@@ -175,8 +162,7 @@ class ReportHandler:
                 # Mark as processed by copying the directory
                 try:
                     processed_path = f"/home/administratror/expeditions/processed/{self.expedition_id}"
-                    if not os.path.exists(processed_path):
-                        shutil.copytree(expedition_path, processed_path)
+                    shutil.copytree(expedition_path, processed_path)
                 except Exception as e:
                     print(f"Warning: Failed to copy expedition directory: {e}")
 
@@ -190,6 +176,8 @@ class ReportHandler:
 
                         camera_name_fetched: str = img_file.split("_")[2] # 0 is ts and 1 is ts's decimal, 2 is cam name and 3 is capture.jpg
 
+                        print("Camera name fetched: ", camera_name_fetched)
+                        print("Image file: ", img_file.split("_"))
                         if camera_name_fetched not in ["rover", "arm", "science", "microscope"]:
                             # put in others
                             image_dict["others"][img_file] = {
@@ -452,7 +440,7 @@ class ReportHandler:
         K = data[5]
 
         ph = data[6]
-        co2 = data[7]
+        co2 = bool(data[7])
         temp = data[8]
         press = data[9]
         alt = data[10]
@@ -469,7 +457,7 @@ class ReportHandler:
             "NPK_sensor_phos": P,
             "NPK_sensor_potassium": K,
             "ph": ph,
-            "mq_135": co2,
+            "mq_135 (co2 presence)": 'Yes' if co2 else 'No',
             "gy-bmp280_temp": temp,
             "gy-bmp280_pressure": press,
             "gy-bmp280_altitude": alt,
@@ -478,7 +466,6 @@ class ReportHandler:
         }
 
         return sensor_data
-
 
 if __name__ == "__main__":
     rh = ReportHandler(inference="Lil nigga inference")

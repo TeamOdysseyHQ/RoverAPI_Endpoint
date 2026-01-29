@@ -55,3 +55,8 @@ storage/waypoints.json
 *.md
 
 report_sci_gen/
+
+storage/fonts/*
+storage/report_sci_gen/
+storage/sci_reports/*
+storage/reports/*

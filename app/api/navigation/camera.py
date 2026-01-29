@@ -651,6 +651,7 @@ async def capture(
     rover_id: str = Form("rover_001"),
     camera_settings: str = Form("{}"),
     tags: str = Form(""),
+    expedition_id: str = Form("")
 ):
     """Capture camera screenshot with metadata"""
     if not image.filename:
@@ -663,7 +664,12 @@ async def capture(
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{secure_filename(image.filename)}"
-    filepath = os.path.join(IMAGE_DIR, filename)
+    img_dir_loc = "/home/administratror/expeditions/unprocessed/" + expedition_id
+    if not os.path.exists(img_dir_loc):
+        os.mkdir(img_dir_loc)
+
+    filepath = os.path.join(img_dir_loc, filename)
+    print(f"---->0x100 [Capture] Saving uploaded image to {filepath}")
 
     # Save uploaded file
     contents = await image.read()

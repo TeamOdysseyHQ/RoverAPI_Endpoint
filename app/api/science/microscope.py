@@ -199,6 +199,7 @@ async def capture_from_microscope(
     mission_id: str = Form("default"),
     rover_id: str = Form("rover_001"),
     note: str = Form(""),
+    expedition_id: str = Form("")
 ):
     """Capture image from microscope with full metadata"""
     frame = microscope_manager.capture_frame()
@@ -211,7 +212,12 @@ async def capture_from_microscope(
     # Save frame as JPEG
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_microscope_capture.jpg"
-    filepath = os.path.join(IMAGE_DIR, filename)
+    # filepath = os.path.join(IMAGE_DIR, filename)
+    img_dir_loc = "/home/administratror/expeditions/unprocessed/" + expedition_id
+    if not os.path.exists(img_dir_loc):
+        os.mkdir(img_dir_loc)
+
+    filepath = os.path.join(img_dir_loc, filename)
 
     cv2.imwrite(filepath, frame)
     file_size = os.path.getsize(filepath)
