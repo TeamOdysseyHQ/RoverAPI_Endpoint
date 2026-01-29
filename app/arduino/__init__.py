@@ -1,0 +1,1 @@
+"""Arduino serial communication module"""

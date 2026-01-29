@@ -13,4 +13,5 @@ dependencies = [
     "werkzeug>=3.0.0",
     "opencv-python>=4.8.0",
     "roslibpy>=2.0.0",
+    "pyserial>=3.5",
 ]

@@ -15,6 +15,7 @@ from app.api.navigation import (
     camera_ws,
     report,
     ros_nav,
+    arduino_nav,
 )
 from app.api.others import available as o_available
 from app.api.others import teensy, test
@@ -36,6 +37,9 @@ router.include_router(
 router.include_router(report.router, prefix="/api/nav", tags=["navigation"])
 router.include_router(nav_available.router, prefix="/api/nav", tags=["navigation"])
 router.include_router(ros_nav.router, prefix="/api/nav", tags=["navigation", "ros"])
+router.include_router(
+    arduino_nav.router, prefix="/api/nav", tags=["navigation", "arduino"]
+)
 
 # Diagnostics endpoints -> /api/dgt/
 router.include_router(doctor.router, prefix="/api/dgt", tags=["diagnostics"])
