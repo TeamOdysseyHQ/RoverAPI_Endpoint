@@ -1,10 +1,17 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
-from fastapi.responses import StreamingResponse
+import json
+import os
+import re
+import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
-import os, json, cv2, threading, subprocess, re
 from pathlib import Path
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+import cv2
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 
 router = APIRouter()
 
@@ -16,7 +23,6 @@ os.makedirs(IMAGE_DIR, exist_ok=True)
 os.makedirs("storage/reports", exist_ok=True)
 
 
-# Camera names mapped to device paths
 CAMERA_DEVICES = {
     "microscope": "/dev/camera-microscope",
     "arm": "/dev/camera-arm",
@@ -517,7 +523,7 @@ async def capture_from_camera(
     mission_id: str = Form("default"),
     rover_id: str = Form("rover_001"),
     tags: str = Form(""),
-    expedition_id: str = Form("")
+    expedition_id: str = Form(""),
 ):
     """Capture image from specific camera"""
     frame = camera_manager.capture_frame(camera_name)
@@ -530,10 +536,7 @@ async def capture_from_camera(
     # Save frame as JPEG
 
     if not expedition_id:
-        return {
-            "status": "error",
-            "message": "Expedition ID must be provided."
-        }
+        return {"status": "error", "message": "Expedition ID must be provided."}
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{camera_name}_capture.jpg"
@@ -586,7 +589,7 @@ async def capture_from_camera(
         },
         "note": note,
         "tags": tags.split(",") if tags else [],
-        "expedition_id": expedition_id
+        "expedition_id": expedition_id,
     }
     metadata.append(entry)
     save_json(META_FILE, metadata)
