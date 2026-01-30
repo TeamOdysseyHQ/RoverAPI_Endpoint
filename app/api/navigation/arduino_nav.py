@@ -134,11 +134,11 @@ async def send_direction(cmd: ArduinoDirectionRequest):
 
     # Map direction names to commands
     direction_map = {
-        "forward": "W",
-        "backward": "S",
-        "left": "A",
-        "right": "D",
-        "stop": "X",
+        "forward": "w",
+        "backward": "s",
+        "left": "a",
+        "right": "d",
+        "stop": "x",
     }
 
     direction_lower = cmd.direction.lower()
