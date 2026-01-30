@@ -73,19 +73,33 @@ async def get_arduino_status():
 @router.post("/arduino/cmd")
 async def send_command(cmd: ArduinoCommandRequest):
     """
-    Send a single character command to Arduino.
+    Send a command to Arduino.
 
-    Valid commands:
-    - W: Forward/Up
-    - S: Backward/Down
-    - A: Left
-    - D: Right
-    - X: Stop
+    Valid command formats:
+    1. Single character commands:
+       - W/w: Forward/Up
+       - S/s: Backward/Down
+       - A/a: Left
+       - D/d: Right
+       - X/x: Stop
+       - I/i, J/j, K/k, L/l: Camera controls
 
-    Example request:
+    2. Speed-aware commands (format: "direction:speed"):
+       - "w:255": Forward at speed 255 (0-255)
+       - "s:120": Backward at speed 120
+       - "a:200": Left at speed 200
+       - "d:180": Right at speed 180
+       - "x:0": Stop (speed 0)
+
+    Example requests:
     ```json
     {
         "command": "W"
+    }
+    ```
+    ```json
+    {
+        "command": "w:255"
     }
     ```
     """
@@ -102,8 +116,8 @@ async def send_command(cmd: ArduinoCommandRequest):
 
     return {
         "success": True,
-        "message": f"Command '{cmd.command.upper()}' sent to Arduino",
-        "command": cmd.command.upper(),
+        "message": f"Command '{cmd.command}' sent to Arduino",
+        "command": cmd.command,
     }
 
 

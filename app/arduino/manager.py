@@ -80,10 +80,13 @@ class ArduinoManager:
 
     def send_command(self, command: str) -> bool:
         """
-        Send a single character command to Arduino.
+        Send a command to Arduino.
 
         Args:
-            command: Single character command (W, S, A, D)
+            command: Command string
+                - Single character (W, S, A, D, X, I, J, K, L) for simple commands
+                - Format "direction:speed" (e.g., "w:255") for speed-aware commands
+                - Camera commands (i, j, k, l)
 
         Returns:
             True if sent successfully, False otherwise
@@ -92,18 +95,52 @@ class ArduinoManager:
             print("Not connected to Arduino. Cannot send command.")
             return False
 
-        # Validate command
-        valid_commands = ["W", "S", "A", "D", "X"]
-        if command.upper() not in valid_commands:
-            print(f"Invalid command: {command}. Valid commands: {valid_commands}")
-            return False
+        # Parse command - check if it's a speed-aware command (direction:speed)
+        if ":" in command:
+            # Speed-aware command format: "w:255" or "s:120"
+            parts = command.split(":")
+            if len(parts) != 2:
+                print(f"Invalid command format: {command}. Expected 'direction:speed'")
+                return False
+
+            direction, speed_str = parts
+            direction = direction.lower()
+
+            # Validate direction
+            valid_directions = ["w", "s", "a", "d", "x"]
+            if direction not in valid_directions:
+                print(f"Invalid direction: {direction}. Valid: {valid_directions}")
+                return False
+
+            # Validate speed
+            try:
+                speed = int(speed_str)
+                if speed < 0 or speed > 255:
+                    print(f"Invalid speed: {speed}. Must be 0-255")
+                    return False
+            except ValueError:
+                print(f"Invalid speed value: {speed_str}. Must be an integer")
+                return False
+
+            # Send command with speed (format: "w:255\n")
+            command_bytes = f"{direction}:{speed}\n".encode()
+        else:
+            # Simple single character command or camera command
+            cmd_lower = command.lower()
+            valid_commands = ["w", "s", "a", "d", "x", "i", "j", "k", "l"]
+            if cmd_lower not in valid_commands:
+                print(f"Invalid command: {command}. Valid: {valid_commands}")
+                return False
+
+            # Send single character command
+            command_bytes = f"{cmd_lower}\n".encode()
 
         try:
             with self._write_lock:
                 # Send command as bytes
-                self.serial_port.write(command.upper().encode())
+                self.serial_port.write(command_bytes)
                 self.serial_port.flush()
-                print(f"[Arduino] Sent command: {command.upper()}")
+                print(f"[Arduino] Sent command: {command_bytes.decode().strip()}")
                 return True
 
         except serial.SerialException as e:
