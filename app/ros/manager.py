@@ -442,6 +442,52 @@ class RosbridgeManager:
 
         return raw_message.get("data")
 
+    # CAMERA convenience methods
+
+    def subscribe_camera_image(
+        self, topic_name: Optional[str] = None, callback: Optional[Callable] = None
+    ) -> bool:
+        """
+        Subscribe to camera image topic.
+
+        Args:
+            topic_name: Camera topic name (default: /camera/camera/color/image_raw)
+            callback: Optional callback function to handle image messages
+
+        Returns:
+            True if subscribed successfully
+        """
+        if topic_name is None:
+            topic_name = CAMERA_COLOR_IMAGE_RAW_TOPIC
+
+        return self.subscribe(topic_name, "sensor_msgs/Image", callback)
+
+    def get_latest_camera_image(
+        self, topic_name: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get latest camera image message.
+
+        Args:
+            topic_name: Camera topic name (default: /camera/camera/color/image_raw)
+
+        Returns:
+            Image message with structure:
+            {
+                "header": {"seq": int, "stamp": {...}, "frame_id": str},
+                "height": int,
+                "width": int,
+                "encoding": str,  # e.g., "rgb8", "bgr8", "mono8"
+                "is_bigendian": int,
+                "step": int,  # row length in bytes
+                "data": str  # base64 encoded image data
+            }
+        """
+        if topic_name is None:
+            topic_name = CAMERA_COLOR_IMAGE_RAW_TOPIC
+
+        return self.get_latest_message(topic_name)
+
 
 # Global instance
 ros_manager = RosbridgeManager()

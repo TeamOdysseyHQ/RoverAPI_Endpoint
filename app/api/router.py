@@ -15,6 +15,7 @@ from app.api.navigation import (
     camera_ws,
     report,
     ros_nav,
+    ros_camera,
     arduino_nav,
 )
 from app.api.others import available as o_available
@@ -37,6 +38,9 @@ router.include_router(
 router.include_router(report.router, prefix="/api/nav", tags=["navigation"])
 router.include_router(nav_available.router, prefix="/api/nav", tags=["navigation"])
 router.include_router(ros_nav.router, prefix="/api/nav", tags=["navigation", "ros"])
+router.include_router(
+    ros_camera.router, prefix="/api/nav", tags=["navigation", "ros", "camera"]
+)
 router.include_router(
     arduino_nav.router, prefix="/api/nav", tags=["navigation", "arduino"]
 )

@@ -8,6 +8,7 @@ TEST_TOPIC = "/teensy_topic"
 
 # Camera topics
 CAMERA_IMAGE_PREFIX = "/camera"
+CAMERA_COLOR_IMAGE_RAW_TOPIC = "/camera/camera/color/image_raw"
 
 # Diagnostics topics
 DIAGNOSTICS_TOPIC = "/diagnostics"
