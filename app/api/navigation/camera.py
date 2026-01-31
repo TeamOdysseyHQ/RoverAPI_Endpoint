@@ -49,7 +49,18 @@ class MultiCameraManager:
         """Open camera with timeout to prevent hanging"""
 
         def open_camera():
+            # Check if it's a named camera first
             device_path = CAMERA_DEVICES.get(camera_name)
+
+            # If not a named camera, check if it's a video device (e.g., "video0")
+            if device_path is None and camera_name.startswith("video"):
+                try:
+                    video_index = int(camera_name.replace("video", ""))
+                    device_path = f"/dev/video{video_index}"
+                except ValueError:
+                    print(f"[Camera] Invalid video device name: {camera_name}")
+                    return None
+
             if device_path is None:
                 print(f"[Camera] Unknown camera name: {camera_name}")
                 return None
@@ -74,9 +85,14 @@ class MultiCameraManager:
             return None
 
     def detect_cameras(self):
-        """Detect all available cameras by checking device paths"""
+        """Detect all available cameras by checking device paths and /dev/video* devices"""
         available = []
+        used_device_paths = set()
+
+        # First, detect named cameras
         for camera_name, device_path in CAMERA_DEVICES.items():
+            used_device_paths.add(device_path)
+
             # Skip if camera is already active
             if camera_name in self.cameras:
                 info = self.camera_info.get(camera_name, {})
@@ -88,6 +104,7 @@ class MultiCameraManager:
                         "default_resolution": f"{info.get('width', 640)}x{info.get('height', 480)}",
                         "default_fps": info.get("fps", 30),
                         "active": True,
+                        "is_named": True,
                     }
                 )
                 continue
@@ -116,9 +133,71 @@ class MultiCameraManager:
                         "default_resolution": f"{width}x{height}",
                         "default_fps": fps,
                         "active": camera_name in self.cameras,
+                        "is_named": True,
                     }
                 )
                 cap.release()
+
+        # Now detect /dev/video* devices
+        video_devices = []
+        for i in range(20):  # Check /dev/video0 through /dev/video19
+            device_path = f"/dev/video{i}"
+
+            # Skip if already in named cameras
+            if device_path in used_device_paths:
+                continue
+
+            # Check if device exists
+            if not os.path.exists(device_path):
+                continue
+
+            # Generate a name for this video device
+            video_name = f"video{i}"
+
+            # Check if already active
+            if video_name in self.cameras:
+                info = self.camera_info.get(video_name, {})
+                video_devices.append(
+                    {
+                        "name": video_name,
+                        "device_path": device_path,
+                        "backend": "V4L2",
+                        "default_resolution": f"{info.get('width', 640)}x{info.get('height', 480)}",
+                        "default_fps": info.get("fps", 30),
+                        "active": True,
+                        "is_named": False,
+                    }
+                )
+                continue
+
+            # Try to open device directly using index
+            try:
+                cap = cv2.VideoCapture(device_path)
+                if cap is not None and cap.isOpened():
+                    # Get camera info
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    fps = int(cap.get(cv2.CAP_PROP_FPS))
+                    backend = cap.getBackendName()
+
+                    video_devices.append(
+                        {
+                            "name": video_name,
+                            "device_path": device_path,
+                            "backend": backend,
+                            "default_resolution": f"{width}x{height}",
+                            "default_fps": fps,
+                            "active": False,
+                            "is_named": False,
+                        }
+                    )
+                    cap.release()
+            except Exception as e:
+                print(f"[Camera] Error opening {device_path}: {e}")
+                continue
+
+        # Append video devices to the end
+        available.extend(video_devices)
         return available
 
     def start_camera(
@@ -148,11 +227,21 @@ class MultiCameraManager:
             camera.set(cv2.CAP_PROP_FPS, fps)
 
             self.cameras[camera_name] = camera
+
+            # Determine device path for video devices
+            device_path = CAMERA_DEVICES.get(camera_name, "")
+            if not device_path and camera_name.startswith("video"):
+                try:
+                    video_index = int(camera_name.replace("video", ""))
+                    device_path = f"/dev/video{video_index}"
+                except ValueError:
+                    pass
+
             self.camera_info[camera_name] = {
                 "width": width,
                 "height": height,
                 "fps": fps,
-                "device_path": CAMERA_DEVICES.get(camera_name, ""),
+                "device_path": device_path,
             }
             self.streaming_status[camera_name] = False
             print(f"[Camera] Camera {camera_name} started successfully")
@@ -260,6 +349,19 @@ class MultiCameraManager:
     def get_supported_resolutions(self, camera_name: str) -> dict:
         """Query supported resolutions for a camera using v4l2-ctl"""
         device_path = CAMERA_DEVICES.get(camera_name)
+
+        # If not a named camera, check if it's a video device
+        if device_path is None and camera_name.startswith("video"):
+            try:
+                video_index = int(camera_name.replace("video", ""))
+                device_path = f"/dev/video{video_index}"
+            except ValueError:
+                return {
+                    "success": False,
+                    "error": f"Invalid video device name: {camera_name}",
+                    "formats": [],
+                }
+
         if not device_path or not os.path.exists(device_path):
             return {
                 "success": False,
@@ -433,10 +535,15 @@ async def detect_cameras():
 @router.get("/cameras/{camera_name}/resolutions")
 async def get_camera_resolutions(camera_name: str):
     """Get supported resolutions for a specific camera"""
-    if camera_name not in CAMERA_DEVICES:
+    # Validate camera name (named camera or video device)
+    is_valid = camera_name in CAMERA_DEVICES or (
+        camera_name.startswith("video") and camera_name[5:].isdigit()
+    )
+
+    if not is_valid:
         raise HTTPException(
             status_code=404,
-            detail=f"Camera '{camera_name}' not found. Available cameras: {', '.join(CAMERA_DEVICES.keys())}",
+            detail=f"Camera '{camera_name}' not found. Available named cameras: {', '.join(CAMERA_DEVICES.keys())}. Also supports video0, video1, etc.",
         )
 
     result = camera_manager.get_supported_resolutions(camera_name)
@@ -444,10 +551,19 @@ async def get_camera_resolutions(camera_name: str):
     if not result.get("success", False) and result.get("error"):
         raise HTTPException(status_code=404, detail=result["error"])
 
+    # Get device path for response
+    device_path = CAMERA_DEVICES.get(camera_name)
+    if device_path is None and camera_name.startswith("video"):
+        try:
+            video_index = int(camera_name.replace("video", ""))
+            device_path = f"/dev/video{video_index}"
+        except ValueError:
+            device_path = "unknown"
+
     return {
         "success": True,
         "camera_name": camera_name,
-        "device_path": CAMERA_DEVICES.get(camera_name),
+        "device_path": device_path,
         "formats": result.get("formats", []),
     }
 
@@ -460,11 +576,15 @@ async def start_camera(
     fps: int = Form(30),
 ):
     """Start specific camera"""
-    # Validate camera name
-    if camera_name not in CAMERA_DEVICES:
+    # Validate camera name (named camera or video device)
+    is_valid = camera_name in CAMERA_DEVICES or (
+        camera_name.startswith("video") and camera_name[5:].isdigit()
+    )
+
+    if not is_valid:
         raise HTTPException(
             status_code=404,
-            detail=f"Camera '{camera_name}' not found. Available cameras: {', '.join(CAMERA_DEVICES.keys())}",
+            detail=f"Camera '{camera_name}' not found. Available named cameras: {', '.join(CAMERA_DEVICES.keys())}. Also supports video0, video1, etc.",
         )
 
     success = camera_manager.start_camera(camera_name, width, height, fps)
@@ -580,7 +700,12 @@ async def capture_from_camera(
         },
         "camera": {
             "camera_name": camera_name,
-            "device_path": CAMERA_DEVICES.get(camera_name, ""),
+            "device_path": CAMERA_DEVICES.get(camera_name)
+            or (
+                f"/dev/video{camera_name.replace('video', '')}"
+                if camera_name.startswith("video")
+                else ""
+            ),
             "settings": {
                 "resolution": f"{img_width}x{img_height}",
                 "hardware_capture": True,
@@ -654,7 +779,7 @@ async def capture(
     rover_id: str = Form("rover_001"),
     camera_settings: str = Form("{}"),
     tags: str = Form(""),
-    expedition_id: str = Form("")
+    expedition_id: str = Form(""),
 ):
     """Capture camera screenshot with metadata"""
     if not image.filename:
