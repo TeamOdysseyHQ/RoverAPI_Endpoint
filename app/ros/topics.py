@@ -3,6 +3,7 @@
 # Navigation topics
 CMD_VEL_TOPIC = "/cmd_vel"
 ODOM_TOPIC = "/odom"
+ODOMETRY_TOPIC = ODOM_TOPIC  # Alias for backward compatibility
 GOAL_POSE_TOPIC = "/goal_pose"
 TEST_TOPIC = "/teensy_topic"
 
