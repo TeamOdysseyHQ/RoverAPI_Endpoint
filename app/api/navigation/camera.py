@@ -139,16 +139,56 @@ class MultiCameraManager:
                 cap.release()
 
         # Now detect /dev/video* devices
+        print("[Camera] Scanning for /dev/video* devices...")
         video_devices = []
         for i in range(20):  # Check /dev/video0 through /dev/video19
             device_path = f"/dev/video{i}"
 
-            # Skip if already in named cameras
-            if device_path in used_device_paths:
-                continue
-
             # Check if device exists
             if not os.path.exists(device_path):
+                continue
+
+            print(f"[Camera] Found {device_path}, checking if it's a capture device...")
+
+            # Skip if already in named cameras
+            if device_path in used_device_paths:
+                print(
+                    f"[Camera] Skipping {device_path} - already mapped as named camera"
+                )
+                continue
+
+            # Check if this is a capture device (not a metadata device)
+            # Metadata devices can't be opened for capture
+            is_capture_device = False
+            try:
+                # Try to detect if this is a capture-capable device using v4l2
+                result = subprocess.run(
+                    ["v4l2-ctl", "-d", device_path, "--list-formats"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                # Check if it's a video capture device
+                if result.returncode == 0 and "Video Capture" in result.stdout:
+                    is_capture_device = True
+                    print(f"[Camera] {device_path} is a Video Capture device")
+                else:
+                    print(
+                        f"[Camera] Skipping {device_path} - not a Video Capture device"
+                    )
+            except FileNotFoundError:
+                # v4l2-ctl not available, try opening anyway
+                print(
+                    f"[Camera] v4l2-ctl not available, attempting to open {device_path} directly"
+                )
+                is_capture_device = True
+            except subprocess.TimeoutExpired:
+                print(f"[Camera] v4l2-ctl timeout for {device_path}, skipping")
+            except Exception as e:
+                print(f"[Camera] v4l2-ctl error for {device_path}: {e}")
+                is_capture_device = True  # Try anyway
+
+            if not is_capture_device:
                 continue
 
             # Generate a name for this video device
@@ -168,9 +208,11 @@ class MultiCameraManager:
                         "is_named": False,
                     }
                 )
+                print(f"[Camera] Added active {video_name} ({device_path})")
                 continue
 
-            # Try to open device directly using index
+            # Try to open device to get info
+            print(f"[Camera] Attempting to open {video_name} at {device_path}...")
             try:
                 cap = cv2.VideoCapture(device_path)
                 if cap is not None and cap.isOpened():
@@ -191,11 +233,17 @@ class MultiCameraManager:
                             "is_named": False,
                         }
                     )
+                    print(
+                        f"[Camera] Successfully detected {video_name}: {width}x{height} @ {fps}fps ({backend})"
+                    )
                     cap.release()
+                else:
+                    print(f"[Camera] Failed to open {device_path}")
             except Exception as e:
                 print(f"[Camera] Error opening {device_path}: {e}")
                 continue
 
+        print(f"[Camera] Found {len(video_devices)} generic video device(s)")
         # Append video devices to the end
         available.extend(video_devices)
         return available
