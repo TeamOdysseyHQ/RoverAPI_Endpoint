@@ -231,6 +231,46 @@ class RosbridgeManager:
         """Get latest odometry message"""
         return self.get_latest_message(ODOM_TOPIC)
 
+    # MOTOR RPM convenience methods
+
+    def subscribe_motor_rpms(self, callback: Optional[Callable] = None) -> bool:
+        """Subscribe to motor RPM topic (/motor_rpms)"""
+        return self.subscribe(MOTOR_RPM_TOPIC, "std_msgs/Float32MultiArray", callback)
+
+    def get_latest_motor_rpms(self) -> Optional[Dict[str, Any]]:
+        """
+        Get latest motor RPM data and parse Float32MultiArray.
+
+        Returns parsed motor RPMs with structure:
+        {
+            "front_left": float,
+            "front_right": float,
+            "mid_left": float,
+            "mid_right": float,
+            "rear_left": float,
+            "rear_right": float,
+            "raw": list[float]
+        }
+        """
+        raw_message = self.get_latest_message(MOTOR_RPM_TOPIC)
+        if raw_message is None:
+            return None
+
+        data = raw_message.get("data", [])
+        if len(data) < 6:
+            print(f"Warning: Expected 6 values in motor RPM data, got {len(data)}")
+            return None
+
+        return {
+            "front_left": float(data[0]),
+            "front_right": float(data[1]),
+            "mid_left": float(data[2]),
+            "mid_right": float(data[3]),
+            "rear_left": float(data[4]),
+            "rear_right": float(data[5]),
+            "raw": [float(v) for v in data],
+        }
+
     # ARM convenience methods
 
     def publish_arm_command(self, command: int) -> bool:
