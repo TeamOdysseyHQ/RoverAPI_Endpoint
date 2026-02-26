@@ -6,6 +6,7 @@ ODOM_TOPIC = "/odom"
 ODOMETRY_TOPIC = ODOM_TOPIC  # Alias for backward compatibility
 GOAL_POSE_TOPIC = "/goal_pose"
 TEST_TOPIC = "/teensy_topic"
+MOTOR_RPM_TOPIC = "/motor_rpms"  # Float32MultiArray[6] - per-wheel RPMs (FL, FR, ML, MR, RL, RR)
 
 # Camera topics
 CAMERA_IMAGE_PREFIX = "/camera"

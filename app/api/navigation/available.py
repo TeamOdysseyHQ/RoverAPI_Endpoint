@@ -27,6 +27,8 @@ def nav_avi_l_ret() -> listOfStrings:
         "cameras/{camera_index}/status",
         "cameras/{camera_index}/capture",
         "cameras/{camera_index}/stream",
+        "ros/motor_rpms/subscribe",
+        "ros/motor_rpms",
     ]
 
 
