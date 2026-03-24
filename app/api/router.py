@@ -13,9 +13,11 @@ from app.api.navigation import (
 from app.api.navigation import (
     camera,
     camera_ws,
+    camera_webrtc,
     report,
     ros_nav,
     ros_camera,
+    ros_camera_webrtc,
     ros_motor_rpm,
     arduino_nav,
 )
@@ -25,6 +27,7 @@ from app.api.science import available as sci_available
 from app.api.science import report as sci_reports
 from app.api.science import sensor_data as sci_sensor_data
 from app.api.science import microscope, microscope_ws
+from app.api.science import microscope_webrtc
 from app.api.science import control as sci_control
 from app.api.science import drill_data as sci_drill_data
 
@@ -48,6 +51,14 @@ router.include_router(
 router.include_router(
     arduino_nav.router, prefix="/api/nav", tags=["navigation", "arduino"]
 )
+router.include_router(
+    camera_webrtc.router, prefix="/api/nav", tags=["navigation", "webrtc", "camera"]
+)
+router.include_router(
+    ros_camera_webrtc.router,
+    prefix="/api/nav",
+    tags=["navigation", "webrtc", "ros", "camera"],
+)
 
 # Diagnostics endpoints -> /api/dgt/
 router.include_router(doctor.router, prefix="/api/dgt", tags=["diagnostics"])
@@ -64,6 +75,11 @@ router.include_router(
 )
 router.include_router(
     microscope_ws.router, prefix="/api/sci", tags=["science", "microscope", "websocket"]
+)
+router.include_router(
+    microscope_webrtc.router,
+    prefix="/api/sci",
+    tags=["science", "microscope", "webrtc"],
 )
 router.include_router(
     sci_control.router, prefix="/api/sci", tags=["science", "control", "ros"]

@@ -1,8 +1,9 @@
 """ROS camera image streaming endpoints"""
 
+import asyncio
 import base64
 import io
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -94,7 +95,11 @@ async def get_latest_camera_image(topic_name: Optional[str] = None):
 
 
 @router.get("/ros/camera/stream")
-async def stream_camera_mjpeg(topic_name: Optional[str] = None):
+async def stream_camera_mjpeg(
+    topic_name: Optional[str] = None,
+    fps: int = Query(30, ge=1, le=60),
+    quality: int = Query(85, ge=1, le=100),
+):
     """
     Stream camera images as MJPEG over HTTP.
     Must subscribe to the topic first using POST /api/nav/ros/camera/subscribe.
@@ -108,52 +113,54 @@ async def stream_camera_mjpeg(topic_name: Optional[str] = None):
         )
 
     topic = topic_name or CAMERA_COLOR_IMAGE_RAW_TOPIC
+    frame_delay = 1.0 / fps
+
+    def _decode_frame(image_msg, quality):
+        """Decode ROS image message to JPEG bytes (CPU-intensive, runs in executor)"""
+        width = image_msg.get("width", 0)
+        height = image_msg.get("height", 0)
+        encoding = image_msg.get("encoding", "rgb8")
+        data_base64 = image_msg.get("data", "")
+
+        if not data_base64 or width <= 0 or height <= 0:
+            return None
+
+        image_data = base64.b64decode(data_base64)
+
+        if encoding == "rgb8":
+            image_array = np.frombuffer(image_data, dtype=np.uint8)
+            image_array = image_array.reshape((height, width, 3))
+            image = Image.fromarray(image_array, mode="RGB")
+        elif encoding == "bgr8":
+            image_array = np.frombuffer(image_data, dtype=np.uint8)
+            image_array = image_array.reshape((height, width, 3))
+            image_array = image_array[:, :, ::-1]
+            image = Image.fromarray(image_array, mode="RGB")
+        elif encoding == "mono8":
+            image_array = np.frombuffer(image_data, dtype=np.uint8)
+            image_array = image_array.reshape((height, width))
+            image = Image.fromarray(image_array, mode="L")
+        else:
+            return None
+
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=quality)
+        return buffer.getvalue()
 
     async def generate_frames():
         """Generate MJPEG frames from ROS image messages"""
-        import time
+        loop = asyncio.get_event_loop()
 
         while True:
             image_msg = ros_manager.get_latest_camera_image(topic_name=topic)
 
             if image_msg:
                 try:
-                    # Extract image data
-                    width = image_msg.get("width", 0)
-                    height = image_msg.get("height", 0)
-                    encoding = image_msg.get("encoding", "rgb8")
-                    data_base64 = image_msg.get("data", "")
+                    frame = await loop.run_in_executor(
+                        None, _decode_frame, image_msg, quality
+                    )
 
-                    if data_base64 and width > 0 and height > 0:
-                        # Decode base64 image data
-                        image_data = base64.b64decode(data_base64)
-
-                        # Convert to numpy array based on encoding
-                        if encoding == "rgb8":
-                            image_array = np.frombuffer(image_data, dtype=np.uint8)
-                            image_array = image_array.reshape((height, width, 3))
-                            image = Image.fromarray(image_array, mode="RGB")
-                        elif encoding == "bgr8":
-                            image_array = np.frombuffer(image_data, dtype=np.uint8)
-                            image_array = image_array.reshape((height, width, 3))
-                            # Convert BGR to RGB
-                            image_array = image_array[:, :, ::-1]
-                            image = Image.fromarray(image_array, mode="RGB")
-                        elif encoding == "mono8":
-                            image_array = np.frombuffer(image_data, dtype=np.uint8)
-                            image_array = image_array.reshape((height, width))
-                            image = Image.fromarray(image_array, mode="L")
-                        else:
-                            # Unsupported encoding, skip frame
-                            time.sleep(0.033)  # ~30 FPS
-                            continue
-
-                        # Convert to JPEG
-                        buffer = io.BytesIO()
-                        image.save(buffer, format="JPEG", quality=85)
-                        frame = buffer.getvalue()
-
-                        # Yield as multipart MJPEG
+                    if frame is not None:
                         yield (
                             b"--frame\r\n"
                             b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
@@ -162,8 +169,7 @@ async def stream_camera_mjpeg(topic_name: Optional[str] = None):
                 except Exception as e:
                     print(f"Error processing frame: {e}")
 
-            # Control frame rate (~30 FPS)
-            time.sleep(0.033)
+            await asyncio.sleep(frame_delay)
 
     return StreamingResponse(
         generate_frames(),

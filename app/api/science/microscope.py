@@ -1,18 +1,24 @@
+import fcntl
 import json
 import os
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
+from pathlib import Path
 
 import cv2
-from fastapi import APIRouter, Form, HTTPException
+from fastapi import APIRouter, Form, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 router = APIRouter()
 
 IMAGE_DIR = "storage/images"
 META_FILE = "storage/metadata.json"
+EXPEDITION_BASE_DIR = os.environ.get(
+    "EXPEDITION_BASE_DIR", "/home/administrator/expeditions/unprocessed"
+)
 
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
@@ -156,6 +162,34 @@ def save_json(path, data):
         json.dump(data, f, indent=2)
 
 
+def save_json_locked(path, updater):
+    """Atomically read-modify-write a JSON file with file locking."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lock_path = path + ".lock"
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            data = load_json(path)
+            data = updater(data)
+            save_json(path, data)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    return data
+
+
+def get_safe_expedition_dir(expedition_id: str) -> str:
+    """Validate expedition_id and return a safe directory path."""
+    sanitized = "".join(c for c in expedition_id if c.isalnum() or c in "._-")
+    if not sanitized:
+        raise HTTPException(status_code=400, detail="Expedition ID must be provided.")
+    base = Path(EXPEDITION_BASE_DIR).resolve()
+    target = (base / sanitized).resolve()
+    if not str(target).startswith(str(base)):
+        raise HTTPException(status_code=400, detail="Invalid expedition ID.")
+    os.makedirs(str(target), exist_ok=True)
+    return str(target)
+
+
 @router.post("/microscope/start")
 async def start_microscope(
     width: int = Form(640), height: int = Form(480), fps: int = Form(30)
@@ -212,10 +246,7 @@ async def capture_from_microscope(
     # Save frame as JPEG
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_microscope_capture.jpg"
-    # filepath = os.path.join(IMAGE_DIR, filename)
-    img_dir_loc = "/home/administratror/expeditions/unprocessed/" + expedition_id
-    if not os.path.exists(img_dir_loc):
-        os.mkdir(img_dir_loc)
+    img_dir_loc = get_safe_expedition_dir(expedition_id) if expedition_id else IMAGE_DIR
 
     filepath = os.path.join(img_dir_loc, filename)
 
@@ -226,7 +257,6 @@ async def capture_from_microscope(
     height, width = frame.shape[:2]
 
     # Create metadata entry
-    metadata = load_json(META_FILE)
     entry = {
         "file": filename,
         "timestamp": timestamp,
@@ -250,8 +280,7 @@ async def capture_from_microscope(
         "note": note,
         "tags": ["microscope", "science"],  # Auto-tags
     }
-    metadata.append(entry)
-    save_json(META_FILE, metadata)
+    save_json_locked(META_FILE, lambda data: data + [entry])
 
     return {
         "success": True,
@@ -262,15 +291,17 @@ async def capture_from_microscope(
     }
 
 
-def generate_video_stream():
+def generate_video_stream(target_fps: int = 30, quality: int = 85):
     """Generator function for MJPEG video streaming from microscope"""
+    frame_delay = 1.0 / target_fps
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
     while True:
         frame = microscope_manager.capture_frame()
         if frame is None:
             break
 
         # Encode frame as JPEG
-        ret, buffer = cv2.imencode(".jpg", frame)
+        ret, buffer = cv2.imencode(".jpg", frame, encode_param)
         if not ret:
             continue
 
@@ -279,9 +310,14 @@ def generate_video_stream():
         # Yield frame in multipart format
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
+        time.sleep(frame_delay)
+
 
 @router.get("/microscope/stream")
-async def video_stream():
+async def video_stream(
+    fps: int = Query(30, ge=1, le=60),
+    quality: int = Query(85, ge=1, le=100),
+):
     """Stream live video feed from microscope (MJPEG)"""
     status = microscope_manager.get_status()
     if not status["active"]:
@@ -292,6 +328,6 @@ async def video_stream():
 
     microscope_manager.streaming_status = True
     return StreamingResponse(
-        generate_video_stream(),
+        generate_video_stream(target_fps=fps, quality=quality),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )

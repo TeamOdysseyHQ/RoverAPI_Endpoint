@@ -6,6 +6,8 @@ from app.api.science.microscope import microscope_manager
 
 router = APIRouter()
 
+MAX_CLIENTS = 5
+
 
 @router.websocket("/microscope/stream/ws")
 async def microscope_websocket_stream(
@@ -19,6 +21,17 @@ async def microscope_websocket_stream(
         fps: Target frames per second (default: 30)
     """
     await websocket.accept()
+
+    # Check connection limit
+    if microscope_manager.get_ws_client_count() >= MAX_CLIENTS:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "message": f"Too many clients connected (max {MAX_CLIENTS})",
+            }
+        )
+        await websocket.close(code=4001, reason="Too many clients")
+        return
 
     # Register client
     microscope_manager.add_ws_client(websocket)
@@ -49,12 +62,15 @@ async def microscope_websocket_stream(
         }
     )
 
-    frame_delay = 1.0 / fps  # Calculate delay between frames
+    frame_delay = 1.0 / fps
+    loop = asyncio.get_event_loop()
 
     try:
         while True:
-            # Capture frame
-            frame = microscope_manager.capture_frame()
+            # Capture frame in executor to avoid blocking the event loop
+            frame = await loop.run_in_executor(
+                None, microscope_manager.capture_frame
+            )
 
             if frame is None:
                 await websocket.send_json(
@@ -87,7 +103,7 @@ async def microscope_websocket_stream(
         print(f"[MicroscopeWS] Error: {e}")
         try:
             await websocket.send_json({"type": "error", "message": str(e)})
-        except:
+        except Exception:
             pass
     finally:
         # Unregister client
@@ -97,5 +113,6 @@ async def microscope_websocket_stream(
         )
         try:
             await websocket.close()
-        except:
+        except Exception:
+            pass
             pass

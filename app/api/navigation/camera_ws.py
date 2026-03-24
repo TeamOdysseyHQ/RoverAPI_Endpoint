@@ -325,13 +325,12 @@ async def camera_stream_ws(
         await websocket.close(code=4001, reason="Too many clients")
         return
 
-    # Register connection manually (already accepted above)
+    # Register connection using ws_manager (already accepted above)
     async with ws_manager.lock:
         if camera_name not in ws_manager.active_connections:
             ws_manager.active_connections[camera_name] = []
         ws_manager.active_connections[camera_name].append(websocket)
 
-        # Initialize stats
         if camera_name not in ws_manager.connection_stats:
             ws_manager.connection_stats[camera_name] = {
                 "total_connected": 0,
@@ -344,9 +343,6 @@ async def camera_stream_ws(
     print(
         f"[WS] Client connected to camera '{camera_name}' ({ws_manager.get_connection_count(camera_name)} total)"
     )
-
-    # Register with camera manager
-    camera_manager.add_ws_client(camera_name, websocket)
 
     # Send initial status
     await ws_manager.send_json(
@@ -369,44 +365,45 @@ async def camera_stream_ws(
     frame_delay = 1.0 / fps
     current_quality = quality
 
-    # For encoding, we'll use a numeric ID derived from camera name (0 for microscope, 1 for arm, etc.)
-    # This maintains backward compatibility with the frame header format
-    camera_id_map = {"microscope": 0, "arm": 1, "science": 2, "rover": 3}
-    camera_id = camera_id_map.get(camera_name, 0)
+    # Generate camera_id dynamically — hash-based to avoid collisions
+    camera_id = hash(camera_name) & 0x7FFFFFFF
 
-    try:
-        # Main streaming loop
-        while True:
-            # Check for control messages (non-blocking with short timeout)
-            try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
+    # Control message state shared between tasks
+    client_disconnected = False
 
-                # Handle control message
+    async def _listen_for_control_messages():
+        """Separate task to listen for control messages without blocking streaming."""
+        nonlocal current_quality, client_disconnected
+        try:
+            while not client_disconnected:
+                data = await websocket.receive_text()
                 response = await handle_control_message(data, current_quality)
                 if response:
                     await ws_manager.send_json(websocket, response)
-
-                    # Update quality if changed
                     if response.get("type") == "ack" and "quality" in response:
                         current_quality = response["quality"]
+        except WebSocketDisconnect:
+            client_disconnected = True
+        except Exception:
+            client_disconnected = True
 
-            except asyncio.TimeoutError:
-                # No control message, continue streaming
-                pass
-            except WebSocketDisconnect:
-                # Client disconnected
-                raise
+    # Start control message listener as a concurrent task
+    control_task = asyncio.create_task(_listen_for_control_messages())
+    loop = asyncio.get_event_loop()
 
-            # Capture frame
-            frame = camera_manager.capture_frame(camera_name)
+    try:
+        # Main streaming loop
+        while not client_disconnected:
+            # Capture frame in executor to avoid blocking the event loop
+            frame = await loop.run_in_executor(
+                None, camera_manager.capture_frame, camera_name
+            )
             if frame is not None:
                 try:
-                    # Encode frame with header (use camera_id for backward compatibility)
                     binary_message = encode_frame(
                         frame, camera_id, frame_number, current_quality
                     )
 
-                    # Send to client
                     success = await ws_manager.send_to_client(
                         camera_name, websocket, binary_message
                     )
@@ -414,7 +411,6 @@ async def camera_stream_ws(
                     if success:
                         frame_number += 1
                     else:
-                        # Send failed, likely disconnected
                         break
 
                 except ValueError as e:
@@ -431,8 +427,12 @@ async def camera_stream_ws(
     except Exception as e:
         print(f"[WS] Error in streaming loop: {e}")
     finally:
-        # Cleanup
-        camera_manager.remove_ws_client(camera_name, websocket)
+        client_disconnected = True
+        control_task.cancel()
+        try:
+            await control_task
+        except (asyncio.CancelledError, Exception):
+            pass
         await ws_manager.disconnect(camera_name, websocket)
 
 

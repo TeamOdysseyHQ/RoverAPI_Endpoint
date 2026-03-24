@@ -1,8 +1,10 @@
+import fcntl
 import json
 import os
 import re
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
@@ -18,6 +20,11 @@ router = APIRouter()
 IMAGE_DIR = "storage/images"
 META_FILE = "storage/metadata.json"
 WAYPOINT_FILE = "storage/waypoints.json"
+EXPEDITION_BASE_DIR = os.environ.get(
+    "EXPEDITION_BASE_DIR", "/home/administrator/expeditions/unprocessed"
+)
+
+_metadata_lock = threading.Lock()
 
 os.makedirs(IMAGE_DIR, exist_ok=True)
 os.makedirs("storage/reports", exist_ok=True)
@@ -568,9 +575,39 @@ def save_json(path, data):
         json.dump(data, f, indent=2)
 
 
+def save_json_locked(path, updater):
+    """Atomically read-modify-write a JSON file with file locking.
+    updater is a callable that receives the current data and returns modified data."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lock_path = path + ".lock"
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            data = load_json(path)
+            data = updater(data)
+            save_json(path, data)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    return data
+
+
 def secure_filename(filename: str) -> str:
     """Simple secure filename implementation"""
     return "".join(c for c in filename if c.isalnum() or c in "._-")
+
+
+def get_safe_expedition_dir(expedition_id: str) -> str:
+    """Validate expedition_id and return a safe directory path.
+    Raises HTTPException on path traversal attempts."""
+    sanitized = secure_filename(expedition_id)
+    if not sanitized:
+        raise HTTPException(status_code=400, detail="Expedition ID must be provided.")
+    base = Path(EXPEDITION_BASE_DIR).resolve()
+    target = (base / sanitized).resolve()
+    if not str(target).startswith(str(base)):
+        raise HTTPException(status_code=400, detail="Invalid expedition ID.")
+    os.makedirs(str(target), exist_ok=True)
+    return str(target)
 
 
 @router.get("/cameras/detect")
@@ -709,9 +746,7 @@ async def capture_from_camera(
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{camera_name}_capture.jpg"
 
-    img_dir_loc = "/home/administratror/expeditions/unprocessed/" + expedition_id
-    if not os.path.exists(img_dir_loc):
-        os.mkdir(img_dir_loc)
+    img_dir_loc = get_safe_expedition_dir(expedition_id)
 
     filepath = os.path.join(img_dir_loc, filename)
 
@@ -722,7 +757,6 @@ async def capture_from_camera(
     img_height, img_width = frame.shape[:2]
 
     # Create metadata entry
-    metadata = load_json(META_FILE)
     entry = {
         "file": filename,
         "timestamp": timestamp,
@@ -764,8 +798,7 @@ async def capture_from_camera(
         "tags": tags.split(",") if tags else [],
         "expedition_id": expedition_id,
     }
-    metadata.append(entry)
-    save_json(META_FILE, metadata)
+    save_json_locked(META_FILE, lambda data: data + [entry])
 
     return {
         "status": "ok",
@@ -776,15 +809,17 @@ async def capture_from_camera(
     }
 
 
-def generate_video_stream(camera_name: str):
+def generate_video_stream(camera_name: str, target_fps: int = 30, quality: int = 85):
     """Generator function for MJPEG video streaming from specific camera"""
+    frame_delay = 1.0 / target_fps
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
     while True:
         frame = camera_manager.capture_frame(camera_name)
         if frame is None:
             break
 
         # Encode frame as JPEG
-        ret, buffer = cv2.imencode(".jpg", frame)
+        ret, buffer = cv2.imencode(".jpg", frame, encode_param)
         if not ret:
             continue
 
@@ -793,9 +828,15 @@ def generate_video_stream(camera_name: str):
         # Yield frame in multipart format
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
+        time.sleep(frame_delay)
+
 
 @router.get("/cameras/{camera_name}/stream")
-async def video_stream(camera_name: str):
+async def video_stream(
+    camera_name: str,
+    fps: int = Query(30, ge=1, le=60),
+    quality: int = Query(85, ge=1, le=100),
+):
     """Stream live video feed from specific camera (MJPEG)"""
     status = camera_manager.get_camera_status(camera_name)
     if not status["active"]:
@@ -806,7 +847,7 @@ async def video_stream(camera_name: str):
 
     camera_manager.streaming_status[camera_name] = True
     return StreamingResponse(
-        generate_video_stream(camera_name),
+        generate_video_stream(camera_name, target_fps=fps, quality=quality),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -840,9 +881,8 @@ async def capture(
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{secure_filename(image.filename)}"
-    img_dir_loc = "/home/administratror/expeditions/unprocessed/" + expedition_id
-    if not os.path.exists(img_dir_loc):
-        os.mkdir(img_dir_loc)
+    img_dir_loc = get_safe_expedition_dir(expedition_id) if expedition_id else IMAGE_DIR
+    os.makedirs(img_dir_loc, exist_ok=True)
 
     filepath = os.path.join(img_dir_loc, filename)
     print(f"---->0x100 [Capture] Saving uploaded image to {filepath}")
@@ -854,7 +894,6 @@ async def capture(
 
     file_size = os.path.getsize(filepath)
 
-    metadata = load_json(META_FILE)
     entry = {
         "file": filename,
         "timestamp": timestamp,
@@ -876,8 +915,7 @@ async def capture(
         "note": note,
         "tags": tags.split(",") if tags else [],
     }
-    metadata.append(entry)
-    save_json(META_FILE, metadata)
+    save_json_locked(META_FILE, lambda data: data + [entry])
 
     return {
         "status": "ok",

@@ -14,4 +14,5 @@ dependencies = [
     "opencv-python>=4.8.0",
     "roslibpy>=2.0.0",
     "pyserial>=3.5",
+    "aiortc>=1.9.0",
 ]

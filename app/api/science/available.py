@@ -20,6 +20,8 @@ def sci_avi_l_ret() -> listOfStrings:
         "microscope/status",
         "microscope/stream",
         "microscope/stream/ws",
+        "microscope/webrtc/offer",
+        "microscope/webrtc/status",
         "microscope/capture",
         "sensor_data",
         "control/enable",
