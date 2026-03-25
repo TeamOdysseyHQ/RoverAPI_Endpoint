@@ -11,16 +11,15 @@ import time
 from typing import Callable, Dict, List, Optional
 
 import av
-import cv2
 import numpy as np
 from aiortc import (
-    MediaStreamTrack,
     RTCConfiguration,
     RTCIceServer,
     RTCPeerConnection,
     RTCSessionDescription,
 )
 from aiortc.contrib.media import MediaRelay
+from aiortc.mediastreams import VideoStreamTrack
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +41,13 @@ _pc_lock = asyncio.Lock()
 MAX_WEBRTC_CLIENTS_PER_SOURCE = 5
 
 
-class CameraVideoTrack(MediaStreamTrack):
+class CameraVideoTrack(VideoStreamTrack):
     """
     A video track that reads frames from a capture callable and converts
     them to av.VideoFrame for WebRTC transmission.
+
+    Extends VideoStreamTrack (not MediaStreamTrack) so that
+    next_timestamp() is available for frame pacing.
 
     The capture callable should return a numpy array (OpenCV BGR frame)
     or None if no frame is available.
@@ -184,7 +186,7 @@ async def handle_offer(
             source_name,
             pc.connectionState,
         )
-        if pc.connectionState in ("failed", "closed", "disconnected"):
+        if pc.connectionState in ("failed", "closed"):
             await unregister_peer_connection(source_name, pc)
             await pc.close()
 
@@ -213,50 +215,58 @@ async def handle_offer(
             f"Too many WebRTC clients for '{source_name}'"
         )
 
-    # Create and add the video track
-    video_track = CameraVideoTrack(
-        capture_fn=capture_fn,
-        fps=fps,
-        source_name=source_name,
-    )
-    pc.addTrack(video_track)
-
-    # Set remote description (the offer)
-    offer = RTCSessionDescription(sdp=sdp, type=sdp_type)
-    await pc.setRemoteDescription(offer)
-
-    # Create and set local description (the answer)
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-
-    # Ensure ICE candidates have been gathered before returning the SDP.
-    # Without candidates in the answer the client cannot reach us.
-    gather_timeout = 10  # seconds
-    waited = 0.0
-    while pc.iceGatheringState != "complete" and waited < gather_timeout:
-        await asyncio.sleep(0.05)
-        waited += 0.05
-
-    sdp_text = pc.localDescription.sdp
-    candidate_count = sdp_text.count("a=candidate:")
-    logger.info(
-        "[WebRTC:%s] SDP answer ready – %d ICE candidate(s), "
-        "gathering state: %s",
-        source_name,
-        candidate_count,
-        pc.iceGatheringState,
-    )
-    if candidate_count == 0:
-        logger.warning(
-            "[WebRTC:%s] No ICE candidates in SDP answer! "
-            "The client will likely fail to connect.",
-            source_name,
+    # Create and add the video track, then complete SDP exchange.
+    # Wrapped in try/except so the peer is always cleaned up on failure.
+    try:
+        video_track = CameraVideoTrack(
+            capture_fn=capture_fn,
+            fps=fps,
+            source_name=source_name,
         )
+        pc.addTrack(video_track)
 
-    return {
-        "sdp": pc.localDescription.sdp,
-        "type": pc.localDescription.type,
-    }
+        # Set remote description (the offer)
+        offer = RTCSessionDescription(sdp=sdp, type=sdp_type)
+        await pc.setRemoteDescription(offer)
+
+        # Create and set local description (the answer)
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+
+        # Ensure ICE candidates have been gathered before returning the SDP.
+        # Without candidates in the answer the client cannot reach us.
+        gather_timeout = 10  # seconds
+        waited = 0.0
+        while pc.iceGatheringState != "complete" and waited < gather_timeout:
+            await asyncio.sleep(0.05)
+            waited += 0.05
+
+        sdp_text = pc.localDescription.sdp
+        candidate_count = sdp_text.count("a=candidate:")
+        logger.info(
+            "[WebRTC:%s] SDP answer ready – %d ICE candidate(s), "
+            "gathering state: %s",
+            source_name,
+            candidate_count,
+            pc.iceGatheringState,
+        )
+        if candidate_count == 0:
+            logger.warning(
+                "[WebRTC:%s] No ICE candidates in SDP answer! "
+                "The client will likely fail to connect.",
+                source_name,
+            )
+
+        return {
+            "sdp": pc.localDescription.sdp,
+            "type": pc.localDescription.type,
+        }
+    except Exception:
+        # SDP negotiation failed — clean up the registered peer so it
+        # doesn't leak a connection slot.
+        await unregister_peer_connection(source_name, pc)
+        await pc.close()
+        raise
 
 
 async def close_all_connections(source_name: str) -> int:
