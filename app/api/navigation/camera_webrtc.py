@@ -18,6 +18,9 @@ from typing import Optional
 from app.api.webrtc_utils import (
     handle_offer,
     close_all_connections,
+    close_peer_connection,
+    update_peer_feedback,
+    VideoFeedback,
     get_connection_count,
     get_all_webrtc_stats,
     MAX_WEBRTC_CLIENTS_PER_SOURCE,
@@ -31,7 +34,7 @@ class WebRTCOfferRequest(BaseModel):
 
     sdp: str
     type: str = "offer"
-    fps: Optional[int] = 30
+    fps: Optional[int] = 24
 
 
 @router.post("/cameras/{camera_name}/webrtc/offer")
@@ -54,7 +57,7 @@ async def webrtc_offer(
     {
         "sdp": "v=0\\r\\no=- ...",
         "type": "offer",
-        "fps": 30
+        "fps": 24
     }
     ```
     """
@@ -77,7 +80,8 @@ async def webrtc_offer(
             f"Call /cameras/{camera_name}/start first",
         )
 
-    fps = max(1, min(60, request.fps or 30))
+    # Requested delivery target; actual capture FPS is reported separately by the camera.
+    fps = max(1, min(60, request.fps or 24))
 
     # Create a capture function bound to this camera
     def capture():
@@ -105,9 +109,26 @@ async def webrtc_offer(
         "success": True,
         "sdp": answer["sdp"],
         "type": answer["type"],
+        "peer_id": answer["peer_id"],
+        "adaptive_quality": answer["adaptive_quality"],
+        "target_fps": answer["target_fps"],
         "camera_name": camera_name,
         "fps": fps,
     }
+
+
+@router.post("/cameras/{camera_name}/webrtc/connections/{peer_id}/feedback")
+async def webrtc_feedback(camera_name: str, peer_id: str, feedback: VideoFeedback):
+    result = await update_peer_feedback(f"camera:{camera_name}", peer_id, feedback.model_dump())
+    if result is None:
+        raise HTTPException(status_code=404, detail="WebRTC viewer not found")
+    return result
+
+
+@router.delete("/cameras/{camera_name}/webrtc/connections/{peer_id}")
+async def webrtc_close_peer(camera_name: str, peer_id: str):
+    closed = await close_peer_connection(f"camera:{camera_name}", peer_id)
+    return {"success": True, "closed": closed}
 
 
 @router.delete("/cameras/{camera_name}/webrtc")

@@ -22,7 +22,7 @@ from app.api.navigation import (
     arduino_nav,
 )
 from app.api.others import available as o_available
-from app.api.others import teensy, test, android_sensors
+from app.api.others import teensy, test
 from app.api.science import available as sci_available
 from app.api.science import report as sci_reports
 from app.api.science import sensor_data as sci_sensor_data
@@ -95,9 +95,6 @@ router.include_router(ros_arm.router, prefix="/api/arm", tags=["arm", "ros"])
 # Other endpoints -> /api/o/
 router.include_router(test.router, prefix="/api/o", tags=["other"])
 router.include_router(teensy.router, prefix="/api/teensy", tags=["other", "teensy"])
-router.include_router(
-    android_sensors.router, prefix="/api", tags=["other", "android", "sensors"]
-)
 router.include_router(o_available.router, prefix="/api/o", tags=["other"])
 
 # ROS bridge endpoints -> /api/

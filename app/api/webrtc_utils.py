@@ -8,7 +8,9 @@ peer connection lifecycle management, and SDP offer/answer handling.
 import asyncio
 import logging
 import time
+from fractions import Fraction
 from typing import Callable, Dict, List, Optional
+from uuid import uuid4
 
 import av
 import numpy as np
@@ -20,6 +22,9 @@ from aiortc import (
 )
 from aiortc.contrib.media import MediaRelay
 from aiortc.mediastreams import VideoStreamTrack
+from app.api.stream_adaptation import AdaptiveQuality, FramePacer
+from app.api.webrtc_signaling import defer_mdns_end_of_candidates
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +41,18 @@ ICE_CONFIG = RTCConfiguration(
 
 # Track active peer connections for cleanup
 _peer_connections: Dict[str, List[RTCPeerConnection]] = {}
+_peer_ids: Dict[RTCPeerConnection, str] = {}
+_peer_tracks: Dict[RTCPeerConnection, "CameraVideoTrack"] = {}
 _pc_lock = asyncio.Lock()
 
 MAX_WEBRTC_CLIENTS_PER_SOURCE = 5
+
+
+class VideoFeedback(BaseModel):
+    received_fps: float = Field(ge=0, le=240, allow_inf_nan=False)
+    loss_ratio: float = Field(ge=0, le=1, allow_inf_nan=False)
+    jitter_ms: float = Field(ge=0, le=60000, allow_inf_nan=False)
+    decode_ms: float = Field(ge=0, le=60000, allow_inf_nan=False)
 
 
 class CameraVideoTrack(VideoStreamTrack):
@@ -46,8 +60,8 @@ class CameraVideoTrack(VideoStreamTrack):
     A video track that reads frames from a capture callable and converts
     them to av.VideoFrame for WebRTC transmission.
 
-    Extends VideoStreamTrack (not MediaStreamTrack) so that
-    next_timestamp() is available for frame pacing.
+    Uses a monotonic per-track clock for the requested FPS instead of
+    VideoStreamTrack.next_timestamp(), which always paces at 30 FPS.
 
     The capture callable should return a numpy array (OpenCV BGR frame)
     or None if no frame is available.
@@ -69,11 +83,23 @@ class CameraVideoTrack(VideoStreamTrack):
         self._start_time = time.time()
         self._frame_count = 0
         self._null_frame_count = 0
+        self.quality = AdaptiveQuality(fps)
+        self._pacer = FramePacer(fps)
+        self._last_feedback = None
+
+    def feedback(self, values):
+        now = time.monotonic()
+        # Rate limit each viewer's adaptation independently.
+        if self._last_feedback is None or now - self._last_feedback >= 1:
+            self.quality.update(values)
+            self._last_feedback = now
+        return {"target_fps": self.quality.target_fps, "scale": self.quality.scale, "bitrate_control": "rtcp-remb"}
 
     async def recv(self) -> av.VideoFrame:
         """Receive the next video frame."""
         # Pace frame delivery to target FPS
-        pts, time_base = await self.next_timestamp()
+        await asyncio.sleep(self._pacer.delay(time.monotonic()))
+        pts, time_base = self._pacer.timestamp(time.monotonic()), Fraction(1, 90000)
 
         loop = asyncio.get_running_loop()
 
@@ -108,6 +134,13 @@ class CameraVideoTrack(VideoStreamTrack):
                 self._null_frame_count = 0
             video_frame = av.VideoFrame.from_ndarray(frame, format="bgr24")
 
+        if self.quality.scale < 1:
+            # Scale only this viewer's encoded frames, not the physical camera.
+            # Keep even dimensions for chroma subsampling, never upscale.
+            scale = max(self.quality.scale, min(1, max(320 / video_frame.width, 240 / video_frame.height)))
+            width = max(2, int(video_frame.width * scale) // 2 * 2)
+            height = max(2, int(video_frame.height * scale) // 2 * 2)
+            video_frame = video_frame.reformat(width=width, height=height)
         video_frame.pts = pts
         video_frame.time_base = time_base
         self._frame_count += 1
@@ -137,6 +170,7 @@ async def register_peer_connection(
         if len(conns) >= MAX_WEBRTC_CLIENTS_PER_SOURCE:
             return False
         conns.append(pc)
+        _peer_ids[pc] = uuid4().hex
     return True
 
 
@@ -145,6 +179,8 @@ async def unregister_peer_connection(
 ):
     """Remove a peer connection from tracking."""
     async with _pc_lock:
+        _peer_ids.pop(pc, None)
+        _peer_tracks.pop(pc, None)
         if source_name in _peer_connections:
             if pc in _peer_connections[source_name]:
                 _peer_connections[source_name].remove(pc)
@@ -177,6 +213,7 @@ async def handle_offer(
         )
 
     pc = RTCPeerConnection(configuration=ICE_CONFIG)
+    connection_deadline = None
 
     # ---------- diagnostics ----------
     @pc.on("connectionstatechange")
@@ -186,6 +223,9 @@ async def handle_offer(
             source_name,
             pc.connectionState,
         )
+        if pc.connectionState in ("connected", "failed", "closed"):
+            if connection_deadline and connection_deadline is not asyncio.current_task():
+                connection_deadline.cancel()
         if pc.connectionState in ("failed", "closed"):
             await unregister_peer_connection(source_name, pc)
             await pc.close()
@@ -215,6 +255,17 @@ async def handle_offer(
             f"Too many WebRTC clients for '{source_name}'"
         )
 
+    async def expire_unconnected_peer():
+        # A lost HTTP response or vanished browser must not reserve a viewer
+        # slot forever, including when mDNS end-of-candidates is deferred.
+        await asyncio.sleep(30)
+        if pc.connectionState != "connected":
+            logger.warning("[WebRTC:%s] Connection deadline expired", source_name)
+            await unregister_peer_connection(source_name, pc)
+            await pc.close()
+
+    connection_deadline = asyncio.create_task(expire_unconnected_peer())
+
     # Create and add the video track, then complete SDP exchange.
     # Wrapped in try/except so the peer is always cleaned up on failure.
     try:
@@ -224,9 +275,10 @@ async def handle_offer(
             source_name=source_name,
         )
         pc.addTrack(video_track)
+        _peer_tracks[pc] = video_track
 
         # Set remote description (the offer)
-        offer = RTCSessionDescription(sdp=sdp, type=sdp_type)
+        offer = RTCSessionDescription(sdp=defer_mdns_end_of_candidates(sdp), type=sdp_type)
         await pc.setRemoteDescription(offer)
 
         # Create and set local description (the answer)
@@ -251,28 +303,54 @@ async def handle_offer(
             pc.iceGatheringState,
         )
         if candidate_count == 0:
-            logger.warning(
-                "[WebRTC:%s] No ICE candidates in SDP answer! "
-                "The client will likely fail to connect.",
-                source_name,
-            )
+            raise RuntimeError("WebRTC could not gather a local ICE address; check the rover network interfaces")
 
         return {
             "sdp": pc.localDescription.sdp,
             "type": pc.localDescription.type,
+            "peer_id": _peer_ids[pc],
+            "adaptive_quality": True,
+            "target_fps": fps,
         }
-    except Exception:
+    except (Exception, asyncio.CancelledError):
         # SDP negotiation failed — clean up the registered peer so it
         # doesn't leak a connection slot.
+        connection_deadline.cancel()
         await unregister_peer_connection(source_name, pc)
         await pc.close()
         raise
+
+
+async def update_peer_feedback(source_name: str, peer_id: str, feedback: dict) -> Optional[dict]:
+    async with _pc_lock:
+        peer = next((pc for pc in _peer_connections.get(source_name, []) if _peer_ids.get(pc) == peer_id), None)
+        track = _peer_tracks.get(peer)
+        return track.feedback(feedback) if track else None
+
+
+async def close_peer_connection(source_name: str, peer_id: str) -> int:
+    """Close only the requesting viewer, never another source or viewer."""
+    async with _pc_lock:
+        conns = _peer_connections.get(source_name, [])
+        pc = next((peer for peer in conns if _peer_ids.get(peer) == peer_id), None)
+        if pc is None:
+            return 0
+        conns.remove(pc)
+        _peer_ids.pop(pc, None)
+        _peer_tracks.pop(pc, None)
+        if not conns:
+            _peer_connections.pop(source_name, None)
+    await pc.close()
+    return 1
 
 
 async def close_all_connections(source_name: str) -> int:
     """Close all WebRTC connections for a source. Returns count closed."""
     async with _pc_lock:
         conns = _peer_connections.pop(source_name, [])
+        for pc in conns:
+            _peer_ids.pop(pc, None)
+            _peer_tracks.pop(pc, None)
 
     closed = 0
     for pc in conns:

@@ -23,6 +23,9 @@ from app.ros.topics import CAMERA_COLOR_IMAGE_RAW_TOPIC
 from app.api.webrtc_utils import (
     handle_offer,
     close_all_connections,
+    close_peer_connection,
+    update_peer_feedback,
+    VideoFeedback,
     get_connection_count,
     MAX_WEBRTC_CLIENTS_PER_SOURCE,
 )
@@ -36,7 +39,7 @@ class WebRTCOfferRequest(BaseModel):
     sdp: str
     type: str = "offer"
     topic_name: Optional[str] = None
-    fps: Optional[int] = 30
+    fps: Optional[int] = 24
 
 
 def _make_ros_capture(topic: str):
@@ -100,7 +103,7 @@ async def webrtc_offer(request: WebRTCOfferRequest):
         "sdp": "v=0\\r\\no=- ...",
         "type": "offer",
         "topic_name": "/camera/camera/color/image_raw",
-        "fps": 30
+        "fps": 24
     }
     ```
     """
@@ -111,7 +114,7 @@ async def webrtc_offer(request: WebRTCOfferRequest):
         )
 
     topic = request.topic_name or CAMERA_COLOR_IMAGE_RAW_TOPIC
-    fps = max(1, min(60, request.fps or 30))
+    fps = max(1, min(60, request.fps or 24))
     source_name = f"ros_camera:{topic}"
 
     capture_fn = _make_ros_capture(topic)
@@ -136,9 +139,28 @@ async def webrtc_offer(request: WebRTCOfferRequest):
         "success": True,
         "sdp": answer["sdp"],
         "type": answer["type"],
+        "peer_id": answer["peer_id"],
+        "adaptive_quality": answer["adaptive_quality"],
+        "target_fps": answer["target_fps"],
         "topic": topic,
         "fps": fps,
     }
+
+
+@router.post("/ros/camera/webrtc/connections/{peer_id}/feedback")
+async def webrtc_feedback(peer_id: str, feedback: VideoFeedback, topic_name: Optional[str] = None):
+    topic = topic_name or CAMERA_COLOR_IMAGE_RAW_TOPIC
+    result = await update_peer_feedback(f"ros_camera:{topic}", peer_id, feedback.model_dump())
+    if result is None:
+        raise HTTPException(status_code=404, detail="WebRTC viewer not found")
+    return result
+
+
+@router.delete("/ros/camera/webrtc/connections/{peer_id}")
+async def webrtc_close_peer(peer_id: str, topic_name: Optional[str] = None):
+    topic = topic_name or CAMERA_COLOR_IMAGE_RAW_TOPIC
+    closed = await close_peer_connection(f"ros_camera:{topic}", peer_id)
+    return {"success": True, "closed": closed}
 
 
 @router.delete("/ros/camera/webrtc")

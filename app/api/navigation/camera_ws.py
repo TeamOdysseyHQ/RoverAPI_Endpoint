@@ -394,6 +394,7 @@ async def camera_stream_ws(
     try:
         # Main streaming loop
         while not client_disconnected:
+            frame_started = loop.time()
             # Capture frame in executor to avoid blocking the event loop
             frame = await loop.run_in_executor(
                 None, camera_manager.capture_frame, camera_name
@@ -420,7 +421,8 @@ async def camera_stream_ws(
                     break
 
             # Frame rate control
-            await asyncio.sleep(frame_delay)
+            # Capture/encode/send time is part of the frame budget.
+            await asyncio.sleep(max(0, frame_delay - (loop.time() - frame_started)))
 
     except WebSocketDisconnect:
         print(f"[WS] Client disconnected from camera '{camera_name}'")

@@ -19,6 +19,9 @@ from app.api.science.microscope import microscope_manager
 from app.api.webrtc_utils import (
     handle_offer,
     close_all_connections,
+    close_peer_connection,
+    update_peer_feedback,
+    VideoFeedback,
     get_connection_count,
     MAX_WEBRTC_CLIENTS_PER_SOURCE,
 )
@@ -33,7 +36,7 @@ class WebRTCOfferRequest(BaseModel):
 
     sdp: str
     type: str = "offer"
-    fps: Optional[int] = 30
+    fps: Optional[int] = 24
 
 
 @router.post("/microscope/webrtc/offer")
@@ -48,7 +51,7 @@ async def webrtc_offer(request: WebRTCOfferRequest):
     {
         "sdp": "v=0\\r\\no=- ...",
         "type": "offer",
-        "fps": 30
+        "fps": 24
     }
     ```
     """
@@ -59,7 +62,7 @@ async def webrtc_offer(request: WebRTCOfferRequest):
             detail="Microscope not started. Call /microscope/start first",
         )
 
-    fps = max(1, min(60, request.fps or 30))
+    fps = max(1, min(60, request.fps or 24))
 
     try:
         answer = await handle_offer(
@@ -81,8 +84,25 @@ async def webrtc_offer(request: WebRTCOfferRequest):
         "success": True,
         "sdp": answer["sdp"],
         "type": answer["type"],
+        "peer_id": answer["peer_id"],
+        "adaptive_quality": answer["adaptive_quality"],
+        "target_fps": answer["target_fps"],
         "fps": fps,
     }
+
+
+@router.post("/microscope/webrtc/connections/{peer_id}/feedback")
+async def webrtc_feedback(peer_id: str, feedback: VideoFeedback):
+    result = await update_peer_feedback(SOURCE_NAME, peer_id, feedback.model_dump())
+    if result is None:
+        raise HTTPException(status_code=404, detail="WebRTC viewer not found")
+    return result
+
+
+@router.delete("/microscope/webrtc/connections/{peer_id}")
+async def webrtc_close_peer(peer_id: str):
+    closed = await close_peer_connection(SOURCE_NAME, peer_id)
+    return {"success": True, "closed": closed}
 
 
 @router.delete("/microscope/webrtc")
