@@ -5,13 +5,9 @@ import re
 import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
-from uuid import uuid4 as uuid
 
 import cv2
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
@@ -39,8 +35,6 @@ CAMERA_DEVICES = {
     "rover": "/dev/camera-rover",
 }
 
-G_C_NAME = str(uuid())
-
 # Camera hardware management
 class MultiCameraManager:
     def __init__(self):
@@ -48,6 +42,8 @@ class MultiCameraManager:
         self.camera_info: dict[str, dict] = {}
         self.streaming_status: dict[str, bool] = {}
         self.ws_clients: dict[str, list] = {}
+        self._lifecycle_lock = threading.RLock()
+        self._capture_locks: dict[str, threading.RLock] = {}
 
     def _device_path(self, camera_name: str) -> Optional[str]:
         if camera_name in CAMERA_DEVICES:
@@ -75,8 +71,6 @@ class MultiCameraManager:
 
         print(f"[Camera] RAW OPEN {camera_name} -> {device_path}")
 
-        # Deliberately raw.
-        # If this hangs, LET IT HANG.
         cap = cv2.VideoCapture(device_path)
 
         print(
@@ -197,9 +191,6 @@ class MultiCameraManager:
 
                     continue
 
-            # No v4l2-ctl prefilter.
-            # No timeout.
-            # No executor.
             print(f"[Camera] RAW generic open: {device_path}")
 
             cap = cv2.VideoCapture(device_path)
@@ -249,93 +240,92 @@ class MultiCameraManager:
         fps: int = 30,
         pixel_format: Optional[str] = None,
     ):
-        existing = self.cameras.get(camera_name)
+        with self._lifecycle_lock:
+            existing = self.cameras.get(camera_name)
 
-        if existing is not None and existing.isOpened():
-            print(f"[Camera] {camera_name} already started")
+            if existing is not None and existing.isOpened():
+                print(f"[Camera] {camera_name} already started")
+                return True
+
+            print(f"[Camera] Starting {camera_name}")
+
+            camera = self._open_camera(camera_name)
+
+            if camera is None:
+                return False
+
+            if not camera.isOpened():
+                print(f"[Camera] Failed to open {camera_name}")
+                camera.release()
+                return False
+
+            if pixel_format:
+                camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format))
+            camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            camera.set(cv2.CAP_PROP_FPS, fps)
+
+            device_path = self._device_path(camera_name) or ""
+
+            self.cameras[camera_name] = camera
+            self.camera_info[camera_name] = {
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "device_path": device_path,
+            }
+            self.streaming_status[camera_name] = False
+
+            print(f"[Camera] Started {camera_name}")
+
             return True
 
-        print(f"[Camera] Starting {camera_name}")
-
-        camera = self._open_camera(camera_name)
-
-        if camera is None:
-            return False
-
-        if not camera.isOpened():
-            print(f"[Camera] Failed to open {camera_name}")
-            camera.release()
-            return False
-
-        if pixel_format:
-            camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format))
-        camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        camera.set(cv2.CAP_PROP_FPS, fps)
-
-        device_path = self._device_path(camera_name) or ""
-
-        self.cameras[camera_name] = camera
-        self.camera_info[camera_name] = {
-            "width": width,
-            "height": height,
-            "fps": fps,
-            "device_path": device_path,
-        }
-        self.streaming_status[camera_name] = False
-
-        print(f"[Camera] Started {camera_name}")
-
-        return True
-
     def stop_camera(self, camera_name: str):
-        camera = self.cameras.get(camera_name)
+        with self._lifecycle_lock:
+            camera = self.cameras.get(camera_name)
 
-        if camera is None:
-            return False
+            if camera is None:
+                return False
 
-        print(f"[Camera] Releasing {camera_name}")
+            print(f"[Camera] Releasing {camera_name}")
 
-        camera.release()
+            with self._capture_locks.setdefault(camera_name, threading.RLock()):
+                camera.release()
+                self.cameras.pop(camera_name, None)
 
-        self.cameras.pop(camera_name, None)
-        self.camera_info.pop(camera_name, None)
-        self.streaming_status.pop(camera_name, None)
+            self.camera_info.pop(camera_name, None)
+            self.streaming_status.pop(camera_name, None)
 
-        return True
+            return True
 
     def stop_all_cameras(self):
-        for name, camera in list(self.cameras.items()):
-            print(f"[Camera] Releasing {name}")
-            camera.release()
+        with self._lifecycle_lock:
+            for name, camera in list(self.cameras.items()):
+                print(f"[Camera] Releasing {name}")
+                with self._capture_locks.setdefault(name, threading.RLock()):
+                    camera.release()
+                    self.cameras.pop(name, None)
 
-        self.cameras.clear()
-        self.camera_info.clear()
-        self.streaming_status.clear()
+            self.cameras.clear()
+            self.camera_info.clear()
+            self.streaming_status.clear()
 
     def capture_frame(self, camera_name: str):
-        camera = self.cameras.get(camera_name)
+        with self._capture_locks.setdefault(camera_name, threading.RLock()):
+            camera = self.cameras.get(camera_name)
 
-        if camera is None:
-            print(f"[Camera] capture_frame: {camera_name} doesn't exist")
-            return None
+            if camera is None:
+                return None
 
-        if not camera.isOpened():
-            print(f"[Camera] capture_frame: {camera_name} isn't open")
-            return None
+            if not camera.isOpened():
+                return None
 
-        # Again deliberately raw.
-        # If read() blocks, we want to see that.
-        print(f"[Camera] READ START {camera_name}")
+            ret, frame = camera.read()
 
-        ret, frame = camera.read()
+            if not ret:
+                return None
 
-        print(f"[Camera] READ END {camera_name}: ret={ret}")
-
-        if not ret:
-            return None
-
-        return frame
+            return frame
 
     def get_camera_status(self, camera_name: str):
         camera = self.cameras.get(camera_name)
@@ -619,20 +609,16 @@ def get_safe_expedition_dir(expedition_id: str) -> str:
 
 
 @router.get("/cameras/detect")
-async def detect_cameras():
+def detect_cameras():
     """Detect all available cameras"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("DETECTION ENDPOINT: Accessing it gng")
     cameras = camera_manager.detect_cameras()
     return {"status": "ok", "cameras": cameras, "count": len(cameras)}
 
 
 @router.get("/cameras/{camera_name}/resolutions")
-async def get_camera_resolutions(camera_name: str):
+def get_camera_resolutions(camera_name: str):
     """Get supported resolutions for a specific camera"""
     # Validate camera name (named camera or video device)
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("DETECTION RESOLUTION ENDPOINT: Accessing it gng")
     is_valid = camera_name in CAMERA_DEVICES or (
         camera_name.startswith("video") and camera_name[5:].isdigit()
     )
@@ -666,7 +652,7 @@ async def get_camera_resolutions(camera_name: str):
 
 
 @router.post("/cameras/{camera_name}/start")
-async def start_camera(
+def start_camera(
     camera_name: str,
     width: int = Form(640),
     height: int = Form(480),
@@ -675,8 +661,6 @@ async def start_camera(
 ):
     """Start specific camera"""
     # Validate camera name (named camera or video device)
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("START CAM ENDPOINT: Accessing it gng")
     is_valid = camera_name in CAMERA_DEVICES or (
         camera_name.startswith("video") and camera_name[5:].isdigit()
     )
@@ -703,10 +687,8 @@ async def start_camera(
 
 
 @router.post("/cameras/{camera_name}/stop")
-async def stop_camera(camera_name: str):
+def stop_camera(camera_name: str):
     """Stop specific camera"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("STOP CAM ENDPOINT: Accessing it gng")
     success = camera_manager.stop_camera(camera_name)
     if not success:
         raise HTTPException(status_code=404, detail=f"Camera '{camera_name}' not found")
@@ -714,32 +696,26 @@ async def stop_camera(camera_name: str):
 
 
 @router.post("/cameras/stop_all")
-async def stop_all_cameras():
+def stop_all_cameras():
     """Stop all cameras"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("STOP CAM ENDPOINT: Accessing it gng")
     camera_manager.stop_all_cameras()
     return {"status": "ok", "message": "All cameras stopped"}
 
 
 @router.get("/cameras/status")
-async def cameras_status():
+def cameras_status():
     """Get status of all cameras"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("STATUS ENDPOINT: Accessing it gng")
     return {"status": "ok", "cameras": camera_manager.get_all_statuses()}
 
 
 @router.get("/cameras/{camera_name}/status")
-async def camera_status(camera_name: str):
+def camera_status(camera_name: str):
     """Get specific camera status"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("STATUS CAM ENDPOINT: Accessing it gng")
     return {"status": "ok", "camera": camera_manager.get_camera_status(camera_name)}
 
 
 @router.post("/cameras/{camera_name}/capture")
-async def capture_from_camera(
+def capture_from_camera(
     camera_name: str,
     latitude: float = Form(0),
     longitude: float = Form(0),
@@ -756,8 +732,6 @@ async def capture_from_camera(
     expedition_id: str = Form(""),
 ):
     """Capture image from specific camera"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("CAPTURE CAM ENDPOINT: Accessing it gng")
     frame = camera_manager.capture_frame(camera_name)
     if frame is None:
         raise HTTPException(
@@ -770,7 +744,7 @@ async def capture_from_camera(
     if not expedition_id:
         return {"status": "error", "message": "Expedition ID must be provided."}
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     filename = f"{timestamp}_{camera_name}_capture.jpg"
 
     img_dir_loc = get_safe_expedition_dir(expedition_id)
@@ -838,8 +812,6 @@ async def capture_from_camera(
 
 def generate_video_stream(camera_name: str, target_fps: int = 30, quality: int = 85):
     """Generator function for MJPEG video streaming from specific camera"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("GENERATE VIDEO CAM ENDPOINT: Accessing it gng")
     frame_delay = 1.0 / target_fps
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
     while True:
@@ -861,14 +833,12 @@ def generate_video_stream(camera_name: str, target_fps: int = 30, quality: int =
 
 
 @router.get("/cameras/{camera_name}/stream")
-async def video_stream(
+def video_stream(
     camera_name: str,
     fps: int = Query(30, ge=1, le=60),
     quality: int = Query(85, ge=1, le=100),
 ):
     """Stream live video feed from specific camera (MJPEG)"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("VIDEO CAM STREAM ENDPOINT: Accessing it gng")
     status = camera_manager.get_camera_status(camera_name)
     if not status["active"]:
         raise HTTPException(
@@ -902,8 +872,6 @@ async def capture(
     expedition_id: str = Form(""),
 ):
     """Capture camera screenshot with metadata"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("CAPTURE CAM ENDPOINT: Accessing it gng")
     if not image.filename:
         raise HTTPException(status_code=400, detail="No image selected")
 
@@ -972,8 +940,6 @@ async def add_waypoint(
 ):
     """Add a waypoint (manual or auto). If 'name' is provided, it's manual; otherwise auto-generated."""
     waypoints = load_json(WAYPOINT_FILE)
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("WAYPOINT ENDPOINT: Accessing it gng")
 
     is_auto_generated = False
 
@@ -1017,8 +983,6 @@ async def add_waypoint(
 @router.get("/get_waypoints")
 async def get_waypoints(mission_id: str = Query(None)):
     """Get waypoints"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("GET WAYPOINTS ENDPOINT: Accessing it gng")
     waypoints = load_json(WAYPOINT_FILE)
 
     if mission_id:
@@ -1030,8 +994,6 @@ async def get_waypoints(mission_id: str = Query(None)):
 @router.get("/get_metadata")
 async def get_metadata(mission_id: str = Query(None)):
     """Get image metadata"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("GET METADATA ENDPOINT: Accessing it gng")
     metadata = load_json(META_FILE)
 
     if mission_id:
@@ -1061,8 +1023,6 @@ async def capture_test_data(
     note: str = Form("Rover mission data capture"),
 ):
     """Generate test rover image with metadata - useful for testing and demos"""
-    with open(f"/home/administratror/DEBUG_CAMS_CSRAL/logger_{G_C_NAME}.log", "a") as out:
-        out.write("CAPTURE TEST ENDPOINT: Accessing it gng")
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:

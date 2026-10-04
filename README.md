@@ -157,3 +157,21 @@ Most directory names are self explanatory but here is a quick reference,
 
 * [Others Directory](app/api/others/): Additional endpoints for debugging, logging etc.
 
+
+
+## Camera endpoint performance follow-up (4 October 2026)
+
+Camera endpoints no longer require a hard-coded debug directory and frame capture
+no longer prints two messages for every read. Blocking camera control, probing and
+MJPEG setup handlers use FastAPI's synchronous worker pool. Camera start/stop
+operations are serialized, and reads/releases use a lock per physical camera so
+independent cameras can still run concurrently. Still captures include microseconds
+in their filenames to avoid overwriting rapid captures. Generic detected `videoN`
+cameras now work with the WebRTC and WebSocket routes as well as MJPEG.
+
+Validation: `python -m unittest discover -s tests` covers routes with fake cameras,
+concurrent starts, capture/stop ownership, generic streaming validation and existing
+signaling/adaptation regressions. Hardware ICE validation is skipped when native
+media dependencies are unavailable. Physical device open/read latency and aggregate
+FPS with multiple viewers still need measurements on the rover; the locks protect
+hardware ownership and do not create additional capture capacity.

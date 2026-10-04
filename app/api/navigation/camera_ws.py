@@ -292,7 +292,7 @@ async def camera_stream_ws(
     await websocket.accept()
 
     # Validate camera name
-    if camera_name not in CAMERA_DEVICES:
+    if camera_name not in CAMERA_DEVICES and not (camera_name.startswith('video') and camera_name[5:].isdigit()):
         await websocket.send_json(
             {
                 "type": "error",
