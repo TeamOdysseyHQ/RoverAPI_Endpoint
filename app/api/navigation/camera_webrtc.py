@@ -64,7 +64,7 @@ async def webrtc_offer(
     from app.api.navigation.camera import camera_manager, CAMERA_DEVICES
 
     # Validate camera name
-    if camera_name not in CAMERA_DEVICES:
+    if camera_name not in CAMERA_DEVICES and not (camera_name.startswith('video') and camera_name[5:].isdigit()):
         raise HTTPException(
             status_code=404,
             detail=f"Camera '{camera_name}' not found. "

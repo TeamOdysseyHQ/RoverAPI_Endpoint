@@ -10,6 +10,7 @@ import ast
 from pathlib import Path
 import re
 import subprocess
+import threading
 from typing import Optional
 from types import SimpleNamespace
 import unittest
@@ -26,7 +27,7 @@ class CameraResolutionTests(unittest.TestCase):
         namespace = {
             "os": SimpleNamespace(path=SimpleNamespace(exists=self.exists)),
             "subprocess": SimpleNamespace(run=self.run, TimeoutExpired=subprocess.TimeoutExpired),
-            "re": re,
+            "re": re, "threading": threading,
             "Optional": Optional,
             "cv2": SimpleNamespace(VideoCapture=object),
             "CAMERA_DEVICES": {"science": "/dev/camera-science"},
