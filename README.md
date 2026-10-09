@@ -175,3 +175,60 @@ signaling/adaptation regressions. Hardware ICE validation is skipped when native
 media dependencies are unavailable. Physical device open/read latency and aggregate
 FPS with multiple viewers still need measurements on the rover; the locks protect
 hardware ownership and do not create additional capture capacity.
+
+## API fixes and performance follow-up (9 October 2026)
+
+The changes prioritize latency, then response time, then bandwidth. Blocking
+microscope, serial, ROS connection, diagnostic and report handlers now run in
+workers. Camera and microscope WebSocket capture/JPEG encoding also run in workers,
+and stream pacing accounts for capture, encoding and send time. Where supported by
+the camera backend, capture buffers are requested at one frame. WebSocket sends
+that stall for two seconds close the viewer connection; clients can reconnect.
+
+Cached science sensor data returns immediately instead of sleeping for half a
+second. ROS WebRTC capture reuses decoded images while the cached message is
+unchanged. ROS MJPEG sends each new cached message once, avoiding repeated JPEG
+encoding and transmission when source updates are slower than the requested FPS.
+Requested FPS is a delivery ceiling; default JPEG quality stays the same.
+
+Captures and reports share `EXPEDITION_BASE_DIR` and
+`EXPEDITION_PROCESSED_DIR`. The default username is intentionally
+`administratror`. The processed directory defaults to a sibling of the configured
+unprocessed directory. Export these environment variables to override them.
+Expedition IDs are validated, and report templates are resolved from this checkout.
+Reports recognize capture names with and without microseconds and mark expeditions
+processed only after successful compilation.
+
+JSON updates use a shared thread/process lock and replace complete snapshots.
+Waypoint names and IDs are assigned inside that transaction. Uploads copy in
+chunks, and rapid captures/uploads use microseconds to avoid overwrites. Failed
+image saves return an error. Serial lifecycle changes are serialized with writes,
+and ROS subscription creation is serialized. Timed-out microscope opens release
+late results instead of leaking devices or queuing repeated open attempts.
+
+Other fixes include padded ROS image rows and byte-array payloads, stream parameter
+validation, WebSocket client-limit/cleanup races, stable camera IDs, multiline
+diagnostic results, the shadowed science download-by-path route, and the navigation
+report download URL. Report downloads are limited to files in configured report
+directories. Shutdown releases camera and serial resources.
+
+Validation: `uv run python -m unittest discover -s tests` passes 64 tests, including
+actual FastAPI routes, concurrent thread/process storage updates, stream cleanup,
+ROS image decoding and real local aiortc ICE/RTP transport. The full app imports,
+serves `/`, and generates its OpenAPI schema. All application and test files parse
+with Python 3.10 syntax; `git diff --check` passes.
+
+Synthetic comparisons against commit `575f91a` on the Windows development host:
+
+| Scenario | Before median | After median |
+| --- | ---: | ---: |
+| Cached science sensor handler | 500.588 ms | 0.028 ms |
+| Decode an unchanged cached 1280x720 BGR ROS image | 9.053 ms | 0.010 ms |
+| Dispatch a simulated 100 ms ROS connect, confirm it started, then complete a health probe | 101.685 ms | 1.231 ms |
+
+Sensor timings use five baseline and thirty updated calls. Image timings use
+thirty calls after warming the updated cache. Health timings use five calls per
+version after warming the worker pool. These isolate the changed paths; they are
+not end-to-end rover measurements. Tests mock physical devices and Typst
+compilation. Physical capture latency, multi-viewer FPS, actual report compilation,
+and rover-network bandwidth still require validation on the rover.

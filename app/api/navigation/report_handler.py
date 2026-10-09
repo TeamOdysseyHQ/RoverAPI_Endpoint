@@ -1,3 +1,4 @@
+from app.utils.expeditions import expedition_path as resolve_expedition_path, capture_details
 # Navigation Report Handler - Generates Typst-based reconnaissance reports
 from typing import Optional, Union
 import time
@@ -131,51 +132,23 @@ class NavigationReportHandler:
             print(f"Warning: Failed to read navigation data: {e}")
             self.data_not_available = True
 
-        if self.data_not_available and self.image_not_available and not force_gen:
-            raise ReportGenerationFailure("Data and Image unavailable. Request denied!")
-
         # Prepare object data from expedition directory
         expedition_path = ""
         objects_dict: OBJECTS_DICT_TYPE = {}
 
         if self.expedition_id is not None:
             expedition_path = (
-                f"/home/administratror/expeditions/unprocessed/{self.expedition_id}"
+                resolve_expedition_path(self.expedition_id)
             )
 
             if os.path.exists(expedition_path):
-                # Mark as processed by copying the directory
-                try:
-                    processed_path = f"/home/administratror/expeditions/processed/{self.expedition_id}"
-                    if not os.path.exists(processed_path):
-                        shutil.copytree(expedition_path, processed_path)
-                except Exception as e:
-                    print(f"Warning: Failed to copy expedition directory: {e}")
-
                 # Build objects dictionary with absolute paths
                 for img_file in os.listdir(expedition_path):
                     if img_file.lower().endswith(
                         (".png", ".jpg", ".jpeg", ".bmp", ".gif")
                     ):
                         # Image filename format: f"{timestamp}_{camera_name}_capture.jpg"
-                        parts = img_file.split("_")
-
-                        camera_name = "unknown"
-                        timestamp_str = "Unknown"
-
-                        if len(parts) >= 3:
-                            # parts[0] = timestamp int, parts[1] = timestamp decimal
-                            # parts[2] = camera name, parts[3] = "capture.jpg"
-                            camera_name = parts[2]
-                            try:
-                                ts_int = parts[0]
-                                ts_dec = parts[1]
-                                ts_float = float(f"{ts_int}.{ts_dec}")
-                                timestamp_str = datetime.datetime.fromtimestamp(
-                                    ts_float
-                                ).strftime("%Y-%m-%d %H:%M:%S")
-                            except:
-                                timestamp_str = "Unknown"
+                        camera_name, timestamp_str = capture_details(img_file)
 
                         # Get GPS coordinates from filename or metadata if available
                         gps_coords = "N/A"
@@ -193,15 +166,11 @@ class NavigationReportHandler:
                             "gps": gps_coords,
                         }
 
-                # Write metadata linking expedition to report
-                try:
-                    metadata_path = f"/home/administratror/expeditions/processed/{self.expedition_id}/nav_metadata.dat"
-                    with open(metadata_path, "w") as meta_f:
-                        meta_f.write(f"{self.report_id}\n")
-                except Exception as e:
-                    print(f"Failed to write metadata file: {e}")
             else:
                 self.image_not_available = True
+
+        if self.data_not_available and self.image_not_available and not force_gen:
+            raise ReportGenerationFailure("Data and Image unavailable. Request denied!")
 
         # Load waypoints from storage
         waypoints = self._load_waypoints()
@@ -230,11 +199,17 @@ class NavigationReportHandler:
                 "Typst compiler not found. Did you install it?"
             )
 
-        # move to reports directory
-        os.link(
+        # Copy also supports deployments with separate source/output filesystems.
+        shutil.copyfile(
             self.fileloc_compiled,
             os.path.join(REPORT_OUTPUT_DIR, f"{self.report_id}.pdf"),
         )
+        # An expedition becomes processed only after successful compilation.
+        if expedition_path and os.path.isdir(expedition_path):
+            processed_path = resolve_expedition_path(self.expedition_id, processed=True)
+            shutil.copytree(expedition_path, processed_path, dirs_exist_ok=True)
+            with open(os.path.join(processed_path, "nav_metadata.dat"), "w", encoding="utf-8") as metadata_file:
+                metadata_file.write(self.report_id + "\n")
         return self.report_id, os.path.abspath(self.fileloc_compiled)
 
     def _generate_typst_report(
@@ -311,7 +286,7 @@ class NavigationReportHandler:
         # TODO: Calculate from expedition start/end times
 
         # Template path
-        template_relative_path = "/home/administratror/Projects/RoverAPI_Endpoint/storage/navigation_report_template.typ"
+        template_relative_path = os.path.join(STORAGE_ROOT, "navigation_report_template.typ").replace(os.sep, "/")
 
         typst_content = f"""
 #import "{template_relative_path}": generate-nav-report
@@ -324,7 +299,7 @@ class NavigationReportHandler:
   route-data: {route_dict_str},
   objects: {objects_dict_str},
   waypoints: {waypoints_arr_str},
-  mission-notes: "{self.mission_notes if self.mission_notes else "No mission summary provided"}",
+  mission-notes: "{self.mission_notes if self.mission_notes else 'No mission summary provided'}",
 )
 """
 
@@ -337,6 +312,7 @@ class NavigationReportHandler:
         route_data: RouteData = {}
 
         if not ros_manager.is_connected:
+            self.data_not_available = True
             print("Warning: Not connected to ROS. Cannot fetch navigation data.")
             return {}
 
@@ -344,10 +320,10 @@ class NavigationReportHandler:
         if ODOMETRY_TOPIC not in ros_manager._subscribers:
             success = ros_manager.subscribe(ODOMETRY_TOPIC, "nav_msgs/Odometry")
             if not success:
+                self.data_not_available = True
                 print(f"Warning: Failed to subscribe to {ODOMETRY_TOPIC}")
                 return {}
 
-        time.sleep(0.5)
         odom_data = ros_manager.get_latest_message(ODOMETRY_TOPIC)
 
         if odom_data is None:

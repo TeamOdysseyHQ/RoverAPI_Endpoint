@@ -1,5 +1,6 @@
 import logging
 import threading
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,11 +74,17 @@ async def shutdown_event():
         for source in all_sources:
             closed = await close_all_connections(source)
             if closed:
-                print(f"  ✓ Closed {closed} WebRTC connection(s) for '{source}'")
+                print(f"  Closed {closed} WebRTC connection(s) for '{source}'")
 
-    if ros_manager.is_connected:
-        ros_manager.disconnect()
-        print("✓ Disconnected from rosbridge")
+    from app.api.navigation.camera import camera_manager
+    from app.api.science.microscope import microscope_manager
+    from app.arduino.manager import arduino_manager
+
+    await asyncio.to_thread(camera_manager.stop_all_cameras)
+    await asyncio.to_thread(microscope_manager.stop_microscope)
+    microscope_manager._executor.shutdown(wait=False, cancel_futures=True)
+    await asyncio.to_thread(arduino_manager.disconnect)
+    await asyncio.to_thread(ros_manager.disconnect)
 
 
 @app.get("/")

@@ -1,3 +1,6 @@
+from app.utils.report_files import is_report_file
+from starlette.concurrency import run_in_threadpool
+from app.utils.expeditions import (EXPEDITION_BASE_DIR, EXPEDITION_PROCESSED_DIR, expedition_path, create_expedition)
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import FileResponse
 from datetime import datetime
@@ -25,21 +28,9 @@ os.makedirs(REPORT_OUTPUT_DIR, exist_ok=True)
 os.makedirs(REPORT_SOURCE_DIR, exist_ok=True)
 
 @router.post("/assign_expedition")
-async def assign_expedition():
+def assign_expedition():
 
-    eid = str(uuid.uuid4()).replace("-", "")
-    counter = 0
-
-    while os.path.exists("/home/administratror/expeditions/unprocessed/" + eid):
-        
-        if counter > 5:
-            eid = str(time.time()).replace(".", "")  # fallback to timestamp
-            break
-        
-        eid = str(uuid.uuid4()).replace("-", "")
-        counter += 1
-
-    os.mkdir("/home/administratror/expeditions/unprocessed/" + eid)
+    eid = create_expedition()
     return {
         "success": True,
         "status": "Success",
@@ -48,9 +39,9 @@ async def assign_expedition():
     }
 
 @router.get("/expedition_check/{expedition_id}")
-async def expedition_check(expedition_id: str):
-    unprocessed_path = f"/home/administratror/expeditions/unprocessed/{expedition_id}"
-    processed_path = f"/home/administratror/expeditions/processed/{expedition_id}"
+def expedition_check(expedition_id: str):
+    unprocessed_path = expedition_path(expedition_id)
+    processed_path = expedition_path(expedition_id, processed=True)
 
     if os.path.exists(processed_path):
         status = "processed"
@@ -68,20 +59,20 @@ async def expedition_check(expedition_id: str):
     }
 
 @router.post("/expeditions_list")
-async def expeditions_list():
+def expeditions_list():
     
     try:
     
-        unprocessed = os.listdir("/home/administratror/expeditions/unprocessed/")
-        processed = os.listdir("/home/administratror/expeditions/processed/")
+        unprocessed = os.listdir(EXPEDITION_BASE_DIR) if os.path.isdir(EXPEDITION_BASE_DIR) else []
+        processed = os.listdir(EXPEDITION_PROCESSED_DIR) if os.path.isdir(EXPEDITION_PROCESSED_DIR) else []
 
         for expedition in processed:
             if expedition in unprocessed:
                 unprocessed.remove(expedition)
 
-            if os.path.exists(f"/home/administratror/expeditions/processed/{expedition}/metadata.dat"):
+            if os.path.exists(os.path.join(expedition_path(expedition, processed=True), "metadata.dat")):
                 try:
-                    with open(f"/home/administratror/expeditions/processed/{expedition}/metadata.dat", "r") as meta_f:
+                    with open(os.path.join(expedition_path(expedition, processed=True), "metadata.dat"), "r") as meta_f:
                         report_id = meta_f.readline().strip()
                         processed[processed.index(expedition)] = {
                             "expedition_id": expedition,
@@ -118,11 +109,11 @@ async def expeditions_list():
 async def sci_reports(request: Request):
     data = (
         await request.json()
-        if request.headers.get("content-type") == "application/json"
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "application/json"
         else None
     )
 
-    if not (data and data.get("inference")):
+    if not (isinstance(data, dict) and data.get("inference")):
         return {
             "success": False,
             "status": "Error",
@@ -135,7 +126,9 @@ async def sci_reports(request: Request):
 
     try:
         rh_handler = ReportHandler(expedition_id=expedition_id, img_captions=img_captions)
-        rid, report_path = rh_handler.create_report(data["inference"], force_gen=force_generate)
+        rid, report_path = await run_in_threadpool(
+            rh_handler.create_report, data["inference"], force_gen=force_generate
+        )
 
         if not report_path:
             return {
@@ -175,16 +168,40 @@ async def sci_reports(request: Request):
 
 
 def verify_report_access(rid: str | None, rpath: str | None) -> int:
-    if rid and os.path.exists(os.path.join(REPORT_OUTPUT_DIR, f"{rid}.pdf")):
+    if rid and is_report_file(os.path.join(REPORT_OUTPUT_DIR, f"{rid}.pdf"), [REPORT_OUTPUT_DIR]):
         return 1
-    elif rpath and os.path.exists(rpath):
+    elif rpath and is_report_file(rpath, [REPORT_OUTPUT_DIR, REPORT_SOURCE_DIR]):
         return 2
 
     return 0  # * unknown report!
 
 
+@router.get("/report/by_path")
+def get_report_by_path(path: str = Query(..., description="Report file path")):
+    info_code = verify_report_access(None, path)
+
+    if info_code == 0:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": "Report not found with given path.",
+        }
+
+    elif info_code == 2:
+        return FileResponse(
+            path=path, media_type="application/pdf", filename=os.path.basename(path)
+        )
+
+    else:
+        return {
+            "success": False,
+            "status": "Error",
+            "message": "Unhandled error in report retrieval by path.",
+        }
+
+
 @router.get("/report/{id}")
-async def get_report_by_id(id: str):
+def get_report_by_id(id: str):
     info_code = verify_report_access(id, None)
 
     if info_code == 0:
@@ -209,32 +226,8 @@ async def get_report_by_id(id: str):
         }
 
 
-@router.get("/report/by_path")
-async def get_report_by_path(path: str = Query(..., description="Report file path")):
-    info_code = verify_report_access(None, path)
-
-    if info_code == 0:
-        return {
-            "success": False,
-            "status": "Error",
-            "message": "Report not found with given path.",
-        }
-
-    elif info_code == 2:
-        return FileResponse(
-            path=path, media_type="application/pdf", filename=os.path.basename(path)
-        )
-
-    else:
-        return {
-            "success": False,
-            "status": "Error",
-            "message": "Unhandled error in report retrieval by path.",
-        }
-
-
 @router.get("/report/{id}/path/{path}")
-async def get_report_by_id_and_path(id: str, path: str):
+def get_report_by_id_and_path(id: str, path: str):
     info_code = verify_report_access(id, path)
     if info_code == 0:
         return {
@@ -264,7 +257,7 @@ async def get_report_by_id_and_path(id: str, path: str):
 
 
 @router.get("/reports/ids")
-async def list_reports():
+def list_reports():
     try:
         reports = os.listdir(REPORT_OUTPUT_DIR)
         report_ids = [f[:-4] for f in reports if f.endswith(".pdf")]
@@ -285,7 +278,7 @@ async def list_reports():
 
 
 @router.get("/reports/path")
-async def list_reports_path():
+def list_reports_path():
     try:
         reports = os.listdir(REPORT_SOURCE_DIR)
 
@@ -308,11 +301,11 @@ async def list_reports_path():
 async def get_report(request: Request):
     data = (
         await request.json()
-        if request.headers.get("content-type") == "application/json"
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "application/json"
         else None
     )
 
-    if not (data and (data.get("report_id") or data.get("report_path"))):
+    if not (isinstance(data, dict) and (data.get("report_id") or data.get("report_path"))):
         return {
             "success": False,
             "status": "Error",
@@ -355,7 +348,7 @@ async def get_report(request: Request):
 
 
 @router.get("/reports/metadata")
-async def get_reports_metadata():
+def get_reports_metadata():
     """Get detailed metadata for all reports"""
     try:
         reports = []
@@ -397,12 +390,12 @@ async def get_reports_metadata():
 
 
 @router.delete("/report/{id}")
-async def delete_report(id: str):
+def delete_report(id: str):
     """Delete a report by ID"""
     try:
         pdf_path = os.path.join(REPORT_OUTPUT_DIR, f"{id}.pdf")
 
-        if not os.path.exists(pdf_path):
+        if not is_report_file(pdf_path, [REPORT_OUTPUT_DIR]):
             return {
                 "success": False,
                 "status": "Error",

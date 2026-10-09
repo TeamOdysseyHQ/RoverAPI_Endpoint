@@ -1,4 +1,3 @@
-import fcntl
 import json
 import os
 import re
@@ -13,16 +12,16 @@ import cv2
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.utils.json_store import load_json, save_json, save_json_locked
+from app.utils.expeditions import EXPEDITION_BASE_DIR, get_safe_expedition_dir
+
 router = APIRouter()
 
 IMAGE_DIR = "storage/images"
 META_FILE = "storage/metadata.json"
 WAYPOINT_FILE = "storage/waypoints.json"
-EXPEDITION_BASE_DIR = os.environ.get(
-    "EXPEDITION_BASE_DIR", "/home/administrator/expeditions/unprocessed"
-)
 
-_metadata_lock = threading.Lock()
+
 
 os.makedirs(IMAGE_DIR, exist_ok=True)
 os.makedirs("storage/reports", exist_ok=True)
@@ -264,6 +263,7 @@ class MultiCameraManager:
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             camera.set(cv2.CAP_PROP_FPS, fps)
+            camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             device_path = self._device_path(camera_name) or ""
 
@@ -328,44 +328,31 @@ class MultiCameraManager:
             return frame
 
     def get_camera_status(self, camera_name: str):
-        camera = self.cameras.get(camera_name)
+        with self._capture_locks.setdefault(camera_name, threading.RLock()):
+            camera = self.cameras.get(camera_name)
 
-        if camera is None or not camera.isOpened():
+            if camera is None or not camera.isOpened():
+                return {
+                    "active": False,
+                    "streaming": False,
+                    "ws_clients": 0,
+                }
+
+            info = self.camera_info.get(camera_name, {})
+
             return {
-                "active": False,
-                "streaming": False,
-                "ws_clients": 0,
-            }
-
-        info = self.camera_info.get(camera_name, {})
-
-        return {
-            "active": True,
-            "streaming": self.streaming_status.get(camera_name, False),
-            "camera_name": camera_name,
-            "device_path": info.get("device_path", ""),
-            "width": int(camera.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            "height": int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-            "fps": int(camera.get(cv2.CAP_PROP_FPS)),
-            "ws_clients": self.get_ws_client_count(camera_name),
-        }
-
-    def get_all_statuses(self):
-        statuses = {}
-
-        for name, camera in list(self.cameras.items()):
-            info = self.camera_info.get(name, {})
-
-            statuses[name] = {
-                "active": camera.isOpened(),
-                "streaming": self.streaming_status.get(name, False),
+                "active": True,
+                "streaming": self.streaming_status.get(camera_name, False),
+                "camera_name": camera_name,
                 "device_path": info.get("device_path", ""),
                 "width": int(camera.get(cv2.CAP_PROP_FRAME_WIDTH)),
                 "height": int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                 "fps": int(camera.get(cv2.CAP_PROP_FPS)),
+                "ws_clients": self.get_ws_client_count(camera_name),
             }
 
-        return statuses
+    def get_all_statuses(self):
+        return {name: self.get_camera_status(name) for name in list(self.cameras)}
 
     def add_ws_client(self, camera_name: str, websocket):
         self.ws_clients.setdefault(camera_name, []).append(websocket)
@@ -561,51 +548,11 @@ class MultiCameraManager:
 # Global camera manager instance
 camera_manager = MultiCameraManager()
 
-def load_json(path):
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
-    return []
-
-
-def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-def save_json_locked(path, updater):
-    """Atomically read-modify-write a JSON file with file locking.
-    updater is a callable that receives the current data and returns modified data."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    lock_path = path + ".lock"
-    with open(lock_path, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            data = load_json(path)
-            data = updater(data)
-            save_json(path, data)
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-    return data
-
 
 def secure_filename(filename: str) -> str:
     """Simple secure filename implementation"""
     return "".join(c for c in filename if c.isalnum() or c in "._-")
 
-
-def get_safe_expedition_dir(expedition_id: str) -> str:
-    """Validate expedition_id and return a safe directory path.
-    Raises HTTPException on path traversal attempts."""
-    sanitized = secure_filename(expedition_id)
-    if not sanitized:
-        raise HTTPException(status_code=400, detail="Expedition ID must be provided.")
-    base = Path(EXPEDITION_BASE_DIR).resolve()
-    target = (base / sanitized).resolve()
-    if not str(target).startswith(str(base)):
-        raise HTTPException(status_code=400, detail="Invalid expedition ID.")
-    os.makedirs(str(target), exist_ok=True)
-    return str(target)
 
 
 @router.get("/cameras/detect")
@@ -654,9 +601,9 @@ def get_camera_resolutions(camera_name: str):
 @router.post("/cameras/{camera_name}/start")
 def start_camera(
     camera_name: str,
-    width: int = Form(640),
-    height: int = Form(480),
-    fps: int = Form(30),
+    width: int = Form(640, ge=1),
+    height: int = Form(480, ge=1),
+    fps: int = Form(30, ge=1, le=60),
     pixel_format: Optional[str] = Form(None),
 ):
     """Start specific camera"""
@@ -751,7 +698,8 @@ def capture_from_camera(
 
     filepath = os.path.join(img_dir_loc, filename)
 
-    cv2.imwrite(filepath, frame)
+    if not cv2.imwrite(filepath, frame):
+        raise HTTPException(status_code=500, detail="Failed to save captured image")
     file_size = os.path.getsize(filepath)
 
     # Get actual image dimensions
@@ -815,6 +763,7 @@ def generate_video_stream(camera_name: str, target_fps: int = 30, quality: int =
     frame_delay = 1.0 / target_fps
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
     while True:
+        frame_started = time.monotonic()
         frame = camera_manager.capture_frame(camera_name)
         if frame is None:
             break
@@ -829,7 +778,7 @@ def generate_video_stream(camera_name: str, target_fps: int = 30, quality: int =
         # Yield frame in multipart format
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
-        time.sleep(frame_delay)
+        time.sleep(max(0, frame_delay - (time.monotonic() - frame_started)))
 
 
 @router.get("/cameras/{camera_name}/stream")
@@ -854,7 +803,7 @@ def video_stream(
 
 
 @router.post("/capture")
-async def capture(
+def capture(
     image: UploadFile = File(...),
     latitude: float = Form(0),
     longitude: float = Form(0),
@@ -880,7 +829,7 @@ async def capture(
     except json.JSONDecodeError:
         camera_settings_dict = {}
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     filename = f"{timestamp}_{secure_filename(image.filename)}"
     img_dir_loc = get_safe_expedition_dir(expedition_id) if expedition_id else IMAGE_DIR
     os.makedirs(img_dir_loc, exist_ok=True)
@@ -889,9 +838,9 @@ async def capture(
     print(f"---->0x100 [Capture] Saving uploaded image to {filepath}")
 
     # Save uploaded file
-    contents = await image.read()
+    import shutil
     with open(filepath, "wb") as f:
-        f.write(contents)
+        shutil.copyfileobj(image.file, f, length=1024 * 1024)
 
     file_size = os.path.getsize(filepath)
 
@@ -927,7 +876,7 @@ async def capture(
 
 
 @router.post("/waypoint")
-async def add_waypoint(
+def add_waypoint(
     latitude: float = Form(0),
     longitude: float = Form(0),
     altitude: float = Form(0),
@@ -939,49 +888,52 @@ async def add_waypoint(
     auto_generated: str = Form("false"),
 ):
     """Add a waypoint (manual or auto). If 'name' is provided, it's manual; otherwise auto-generated."""
-    waypoints = load_json(WAYPOINT_FILE)
+    def update(waypoints):
+        nonlocal name, category, description
 
-    is_auto_generated = False
+        is_auto_generated = False
 
-    if not name:
-        # Auto-generate name
-        waypoint_count = len(
-            [wp for wp in waypoints if wp.get("mission_id") == mission_id]
-        )
-        name = f"Auto Waypoint {waypoint_count + 1}"
-        is_auto_generated = True
-        category = "auto"
-        description = f"Automatically generated waypoint during {mission_id}"
-    else:
-        # Manual waypoint
-        is_auto_generated = auto_generated.lower() == "true"
+        if not name:
+            # Auto-generate name
+            waypoint_count = len(
+                [wp for wp in waypoints if wp.get("mission_id") == mission_id]
+            )
+            name = f"Auto Waypoint {waypoint_count + 1}"
+            is_auto_generated = True
+            category = "auto"
+            description = f"Automatically generated waypoint during {mission_id}"
+        else:
+            # Manual waypoint
+            is_auto_generated = auto_generated.lower() == "true"
 
-    # Create waypoint entry
-    entry = {
-        "name": name,
-        "location": {
-            "latitude": latitude,
-            "longitude": longitude,
-            "altitude": altitude,
-        },
-        "category": category,
-        "description": description,
-        "mission_id": mission_id,
-        "rover_id": rover_id,
-        "auto_generated": is_auto_generated,
-        "timestamp": datetime.utcnow().isoformat(),
-        "timestamp_readable": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "waypoint_id": f"wp_{len(waypoints) + 1:03d}",
-    }
+        # Create waypoint entry
+        entry = {
+            "name": name,
+            "location": {
+                "latitude": latitude,
+                "longitude": longitude,
+                "altitude": altitude,
+            },
+            "category": category,
+            "description": description,
+            "mission_id": mission_id,
+            "rover_id": rover_id,
+            "auto_generated": is_auto_generated,
+            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp_readable": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "waypoint_id": f"wp_{len(waypoints) + 1:03d}",
+        }
 
-    waypoints.append(entry)
-    save_json(WAYPOINT_FILE, waypoints)
+        waypoints.append(entry)
+        return waypoints
+
+    entry = save_json_locked(WAYPOINT_FILE, update)[-1]
 
     return {"status": "ok", "waypoint": entry}
 
 
 @router.get("/get_waypoints")
-async def get_waypoints(mission_id: str = Query(None)):
+def get_waypoints(mission_id: str = Query(None)):
     """Get waypoints"""
     waypoints = load_json(WAYPOINT_FILE)
 
@@ -992,7 +944,7 @@ async def get_waypoints(mission_id: str = Query(None)):
 
 
 @router.get("/get_metadata")
-async def get_metadata(mission_id: str = Query(None)):
+def get_metadata(mission_id: str = Query(None)):
     """Get image metadata"""
     metadata = load_json(META_FILE)
 
@@ -1007,7 +959,7 @@ async def get_metadata(mission_id: str = Query(None)):
 
 
 @router.post("/capture_test_data")
-async def capture_test_data(
+def capture_test_data(
     title: str = Form("Rover Mission Capture"),
     description: str = Form("Camera feed screenshot with metadata"),
     latitude: float = Form(37.7749),
@@ -1087,7 +1039,7 @@ async def capture_test_data(
     draw.rectangle([10, 10, 790, 590], outline="black", width=4)
 
     # Save image
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     filename = f"{timestamp}_rover_test_capture.jpg"
     filepath = os.path.join(IMAGE_DIR, filename)
     img.save(filepath, "JPEG", quality=95)
@@ -1095,7 +1047,6 @@ async def capture_test_data(
     file_size = os.path.getsize(filepath)
 
     # Create metadata entry
-    metadata = load_json(META_FILE)
     entry = {
         "file": filename,
         "timestamp": timestamp,
@@ -1121,8 +1072,7 @@ async def capture_test_data(
         "tags": ["rover", "test", "generated"],
     }
 
-    metadata.append(entry)
-    save_json(META_FILE, metadata)
+    metadata = save_json_locked(META_FILE, lambda data: data + [entry])
 
     return {
         "status": "ok",

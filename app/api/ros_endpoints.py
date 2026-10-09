@@ -41,7 +41,7 @@ async def get_ros_status():
 
 
 @router.post("/ros/connect")
-async def connect_to_ros():
+def connect_to_ros():
     """
     Manually trigger connection to rosbridge_server.
     Usually not needed as connection happens automatically on startup.
@@ -70,7 +70,7 @@ async def connect_to_ros():
 
 
 @router.post("/ros/disconnect")
-async def disconnect_from_ros():
+def disconnect_from_ros():
     """
     Disconnect from rosbridge_server.
     Useful for testing or maintenance.

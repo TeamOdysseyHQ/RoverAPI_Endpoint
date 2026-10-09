@@ -1,3 +1,4 @@
+from app.utils.expeditions import expedition_path as resolve_expedition_path, capture_details
 # Write the general report file and confirm it.
 from typing import Optional, Union
 import time
@@ -130,9 +131,6 @@ class ReportHandler:
         except Exception as e:
             self.data_not_available = True
 
-        if self.data_not_available and self.image_not_available and not force_gen:
-            raise ReportGenerationFailure("Data and Image unavailable. Request denied!")
-
         # Prepare image data from expedition directory
         expedition_path = ""
         image_dict: IMAGE_DICT_TYPE = {
@@ -155,17 +153,10 @@ class ReportHandler:
 
         if self.expedition_id is not None:
             expedition_path = (
-                f"/home/administratror/expeditions/unprocessed/{self.expedition_id}"
+                resolve_expedition_path(self.expedition_id)
             )
 
             if os.path.exists(expedition_path):
-                # Mark as processed by copying the directory
-                try:
-                    processed_path = f"/home/administratror/expeditions/processed/{self.expedition_id}"
-                    shutil.copytree(expedition_path, processed_path)
-                except Exception as e:
-                    print(f"Warning: Failed to copy expedition directory: {e}")
-
                 # Build image dictionary with absolute paths
                 for img_file in os.listdir(expedition_path):
                     if img_file.lower().endswith(
@@ -174,10 +165,8 @@ class ReportHandler:
                         # Store absolute path and caption
                         # So, images have the format: filename = f"{timestamp}_{camera_name}_capture.jpg"
 
-                        camera_name_fetched: str = img_file.split("_")[2] # 0 is ts and 1 is ts's decimal, 2 is cam name and 3 is capture.jpg
+                        camera_name_fetched, _ = capture_details(img_file)
 
-                        print("Camera name fetched: ", camera_name_fetched)
-                        print("Image file: ", img_file.split("_"))
                         if camera_name_fetched not in ["rover", "arm", "science", "microscope"]:
                             # put in others
                             image_dict["others"][img_file] = {
@@ -198,15 +187,11 @@ class ReportHandler:
                                 "caption": self.img_captions.get(img_file, ""),
                             }
 
-                # Write metadata linking expedition to report
-                try:
-                    metadata_path = f"/home/administratror/expeditions/processed/{self.expedition_id}/metadata.dat"
-                    with open(metadata_path, "w") as meta_f:
-                        meta_f.write(f"{self.report_id}\n")
-                except Exception as e:
-                    print(f"Failed to write metadata file: {e}")
             else:
                 self.image_not_available = True
+
+        if self.data_not_available and self.image_not_available and not force_gen:
+            raise ReportGenerationFailure("Data and Image unavailable. Request denied!")
 
         # Generate the Typst report using template
         self._generate_typst_report(sensor_data, image_dict, expedition_path)
@@ -232,11 +217,17 @@ class ReportHandler:
                 "Typst compiler not found. Did you install it?"
             )
 
-        # move to reports directory
-        os.link(
+        # Copy also supports deployments with separate source/output filesystems.
+        shutil.copyfile(
             self.fileloc_compiled,
             os.path.join(REPORT_OUTPUT_DIR, f"{self.report_id}.pdf"),
         )
+        # An expedition becomes processed only after successful compilation.
+        if expedition_path and os.path.isdir(expedition_path):
+            processed_path = resolve_expedition_path(self.expedition_id, processed=True)
+            shutil.copytree(expedition_path, processed_path, dirs_exist_ok=True)
+            with open(os.path.join(processed_path, "metadata.dat"), "w", encoding="utf-8") as metadata_file:
+                metadata_file.write(self.report_id + "\n")
         return self.report_id, os.path.abspath(self.fileloc_compiled)
 
     def _generate_typst_report(
@@ -376,7 +367,7 @@ class ReportHandler:
         # Generate the Typst file using template
         # Use relative path for Typst import (from report_sci_gen/ to template in storage/)
 #        template_relative_path = "../science_report_template.typ"
-        template_relative_path = "/home/administratror/Projects/RoverAPI_Endpoint/storage/science_report_template.typ" # not relative btw
+        template_relative_path = os.path.join(STORAGE_ROOT, "science_report_template.typ").replace(os.sep, "/")
 
 
         typst_content = f"""
@@ -388,7 +379,7 @@ class ReportHandler:
   altitude: 1010,
   expedition-id: {"none" if self.expedition_id is None else f'"{self.expedition_id}"'},
   sensor-data: {sensor_dict_str},
-  inference: "{self.inference if self.inference else "No inference provided"}",
+  inference: "{self.inference if self.inference else 'No inference provided'}",
   images_rover: {rover_image_dict_str},
   images_arm: {arm_image_dict_str},
   images_science: {science_image_dict_str},
@@ -419,7 +410,6 @@ class ReportHandler:
                     f"Failed to subscribe to {SCIENCE_DATA_TOPIC}"
                 )
 
-        time.sleep(0.5)
         data = ros_manager.get_latest_message(SCIENCE_DATA_TOPIC)
 
         if data is None:
@@ -430,7 +420,9 @@ class ReportHandler:
                 self.data_not_available = True
                 return {}
 
-        data = data["data"]  # Dict access, not attribute
+        data = data.get("data", [])
+        if not isinstance(data, (list, tuple)) or len(data) < 14:
+            raise ReportGenerationFailure("Expected 14 science sensor values")
         colourless = bool(data[0])
         purple = bool(data[1])
         humidity = data[2]

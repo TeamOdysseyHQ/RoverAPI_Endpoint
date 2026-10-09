@@ -11,6 +11,8 @@ Endpoints:
     GET /cameras/{camera_name}/webrtc/status   - Connection status
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
@@ -72,7 +74,7 @@ async def webrtc_offer(
         )
 
     # Check if camera is started
-    status = camera_manager.get_camera_status(camera_name)
+    status = await asyncio.to_thread(camera_manager.get_camera_status, camera_name)
     if not status["active"]:
         raise HTTPException(
             status_code=400,
