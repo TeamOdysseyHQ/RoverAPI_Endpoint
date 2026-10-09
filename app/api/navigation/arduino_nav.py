@@ -22,7 +22,7 @@ class ArduinoDirectionRequest(BaseModel):
 
 
 @router.post("/arduino/connect")
-async def connect_arduino():
+def connect_arduino():
     """
     Connect to Arduino via serial port.
     Must be called before sending any commands.
@@ -47,7 +47,7 @@ async def connect_arduino():
 
 
 @router.post("/arduino/disconnect")
-async def disconnect_arduino():
+def disconnect_arduino():
     """
     Disconnect from Arduino.
     """
@@ -56,7 +56,7 @@ async def disconnect_arduino():
 
 
 @router.get("/arduino/status")
-async def get_arduino_status():
+def get_arduino_status():
     """
     Get Arduino connection status.
     Returns connection state and configuration info.
@@ -71,7 +71,7 @@ async def get_arduino_status():
 
 
 @router.post("/arduino/cmd")
-async def send_command(cmd: ArduinoCommandRequest):
+def send_command(cmd: ArduinoCommandRequest):
     """
     Send a command to Arduino.
 
@@ -122,7 +122,7 @@ async def send_command(cmd: ArduinoCommandRequest):
 
 
 @router.post("/arduino/direction")
-async def send_direction(cmd: ArduinoDirectionRequest):
+def send_direction(cmd: ArduinoDirectionRequest):
     """
     Send a directional command to Arduino using friendly names.
 
@@ -178,7 +178,7 @@ async def send_direction(cmd: ArduinoDirectionRequest):
 
 
 @router.post("/arduino/stop")
-async def stop_arduino():
+def stop_arduino():
     """
     Send stop command to Arduino.
     Convenience endpoint to immediately stop the rover.
@@ -198,7 +198,7 @@ async def stop_arduino():
 
 
 @router.post("/arduino/reconnect")
-async def reconnect_arduino():
+def reconnect_arduino():
     """
     Attempt to reconnect to Arduino.
     Useful if connection was lost.

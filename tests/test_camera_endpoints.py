@@ -27,7 +27,7 @@ class CameraEndpointTests(unittest.TestCase):
             node.decorator_list = []
         self.manager = Mock()
         self.ns = {'camera_manager': self.manager, 'CAMERA_DEVICES': {'science': '/dev/camera-science'},
-                   'Optional': Optional, 'Form': lambda default: default, 'HTTPException': HTTPException, 're': __import__('re')}
+                   'Optional': Optional, 'Form': lambda default, **kwargs: default, 'HTTPException': HTTPException, 're': __import__('re')}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), self.ns)
 
     def test_camera_routes_work_without_machine_specific_debug_files(self):
@@ -63,7 +63,7 @@ class CameraEndpointTests(unittest.TestCase):
             handle(**kwargs)
             return {'sdp': 'answer', 'type': 'answer', 'peer_id': 'one', 'adaptive_quality': True, 'target_fps': 24}
         ns = {'camera_manager': self.manager, 'CAMERA_DEVICES': {'science': 'device'},
-              'WebRTCOfferRequest': object, 'HTTPException': HTTPException, 'handle_offer': offer}
+              'WebRTCOfferRequest': object, 'HTTPException': HTTPException, 'handle_offer': offer, 'asyncio': asyncio}
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), ns)
         self.manager.get_camera_status.return_value = {'active': True}
         result = asyncio.run(ns['webrtc_offer']('video3', SimpleNamespace(fps=24, sdp='offer', type='offer')))
@@ -86,7 +86,7 @@ class CameraEndpointTests(unittest.TestCase):
             async def close(self, **kwargs): pass
         ns = {'camera_manager': self.manager, 'CAMERA_DEVICES': {'science': 'device'},
               'WebSocket': object, 'Query': lambda default, **kwargs: default,
-              'DEFAULT_QUALITY': 85, 'DEFAULT_FPS': 30}
+              'DEFAULT_QUALITY': 85, 'DEFAULT_FPS': 30, 'asyncio': asyncio}
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), ns)
         self.manager.get_camera_status.return_value = {'active': False}
         socket = Socket()
@@ -98,7 +98,7 @@ class CameraConcurrencyTests(unittest.TestCase):
     def setUp(self):
         tree = ast.parse(SOURCE.read_text())
         node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'MultiCameraManager')
-        cv = SimpleNamespace(VideoCapture=object, CAP_PROP_FRAME_WIDTH=1, CAP_PROP_FRAME_HEIGHT=2, CAP_PROP_FPS=3)
+        cv = SimpleNamespace(VideoCapture=object, CAP_PROP_FRAME_WIDTH=1, CAP_PROP_FRAME_HEIGHT=2, CAP_PROP_FPS=3, CAP_PROP_BUFFERSIZE=4)
         ns = {'cv2': cv, 'threading': threading, 'Optional': Optional}
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), ns)
         self.manager = ns['MultiCameraManager']()

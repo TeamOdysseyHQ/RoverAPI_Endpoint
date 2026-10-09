@@ -11,9 +11,7 @@ Endpoints:
     GET /ros/camera/webrtc/status   - Connection status
 """
 
-import base64
-
-import numpy as np
+from app.api.ros_image import decode_ros_image
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -48,44 +46,18 @@ def _make_ros_capture(topic: str):
     Returns BGR numpy array compatible with OpenCV / av.VideoFrame.
     """
 
+    last_message = None
+    last_frame = None
+
     def capture():
+        nonlocal last_message, last_frame
         image_msg = ros_manager.get_latest_camera_image(topic_name=topic)
         if not image_msg:
             return None
-
-        width = image_msg.get("width", 0)
-        height = image_msg.get("height", 0)
-        encoding = image_msg.get("encoding", "rgb8")
-        data_base64 = image_msg.get("data", "")
-
-        if not data_base64 or width <= 0 or height <= 0:
-            return None
-
-        try:
-            image_data = base64.b64decode(data_base64)
-
-            if encoding == "rgb8":
-                arr = np.frombuffer(image_data, dtype=np.uint8).reshape(
-                    (height, width, 3)
-                )
-                # Convert RGB to BGR for av.VideoFrame(format="bgr24")
-                return arr[:, :, ::-1].copy()
-            elif encoding == "bgr8":
-                return np.frombuffer(image_data, dtype=np.uint8).reshape(
-                    (height, width, 3)
-                )
-            elif encoding == "mono8":
-                gray = np.frombuffer(image_data, dtype=np.uint8).reshape(
-                    (height, width)
-                )
-                # Convert grayscale to BGR
-                import cv2
-
-                return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-            else:
-                return None
-        except Exception:
-            return None
+        if image_msg is not last_message:
+            last_frame = decode_ros_image(image_msg)
+            last_message = image_msg
+        return last_frame
 
     return capture
 

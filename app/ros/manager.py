@@ -1,6 +1,7 @@
 """ROS bridge manager for WebSocket communication with rosbridge_server"""
 
 import roslibpy
+import logging
 import threading
 import time
 from typing import Optional, Dict, Any, Callable
@@ -31,6 +32,8 @@ class RosbridgeManager:
 
         self._initialized = True
         self.config = config
+        self._connection_lock = threading.RLock()
+        self._topic_lock = threading.RLock()
         self.client: Optional[roslibpy.Ros] = None
         self.is_connected = False
         self._subscribers: Dict[str, roslibpy.Topic] = {}
@@ -44,56 +47,59 @@ class RosbridgeManager:
         Connect to rosbridge server.
         Returns True if connection successful, False otherwise.
         """
-        if self.client and self.is_connected:
-            return True
+        with self._connection_lock:
+            if self.client and self.is_connected:
+                return True
 
-        try:
-            self.client = roslibpy.Ros(host=self.config.host, port=self.config.port)
-            self.client.on_ready(self._on_ready)
-            self.client.on("close", self._on_close)
+            try:
+                self.client = roslibpy.Ros(host=self.config.host, port=self.config.port)
+                self.client.on_ready(self._on_ready)
+                self.client.on("close", self._on_close)
 
-            self.client.run()
+                self.client.run()
 
-            # Wait for connection (with timeout)
-            timeout = 5
-            start_time = time.time()
-            while not self.is_connected and (time.time() - start_time) < timeout:
-                time.sleep(0.1)
+                # Wait for connection (with timeout)
+                timeout = 5
+                start_time = time.time()
+                while not self.is_connected and (time.time() - start_time) < timeout:
+                    time.sleep(0.1)
 
-            return self.is_connected
+                return self.is_connected
 
-        except Exception as e:
-            print(f"Failed to connect to rosbridge: {e}")
-            self.is_connected = False
-            return False
+            except Exception as e:
+                print(f"Failed to connect to rosbridge: {e}")
+                self.is_connected = False
+                return False
 
     def _on_ready(self):
         """Callback when connection is established"""
         self.is_connected = True
-        print(f"✓ Connected to rosbridge at {self.config.url}")
+        print(f"[ROS] Connected to rosbridge at {self.config.url}")
 
     def _on_close(self):
         """Callback when connection is closed"""
         self.is_connected = False
-        print("✗ Disconnected from rosbridge")
+        print("[ROS] Disconnected from rosbridge")
 
     def disconnect(self):
         """Disconnect from rosbridge server"""
-        if self.client:
-            # Unsubscribe all topics
-            for topic in self._subscribers.values():
-                topic.unsubscribe()
-            self._subscribers.clear()
+        with self._connection_lock, self._topic_lock:
+            if self.client:
+                # Unsubscribe all topics
+                for topic in self._subscribers.values():
+                    topic.unsubscribe()
+                self._subscribers.clear()
 
-            # Unadvertise all publishers
-            for topic in self._publishers.values():
-                topic.unadvertise()
-            self._publishers.clear()
+                # Unadvertise all publishers
+                for topic in self._publishers.values():
+                    topic.unadvertise()
+                self._publishers.clear()
 
-            # Close connection
-            self.client.close()
-            self.is_connected = False
-            self.client = None
+                # Close connection
+                self.client.close()
+                self.is_connected = False
+                self.client = None
+                self._latest_messages.clear()
 
     def publish(
         self, topic_name: str, message_type: str, message: Dict[str, Any]
@@ -109,25 +115,26 @@ class RosbridgeManager:
         Returns:
             True if published successfully, False otherwise
         """
-        if not self.is_connected:
-            print("Not connected to rosbridge. Cannot publish.")
-            return False
+        with self._topic_lock:
+            if not self.is_connected:
+                print("Not connected to rosbridge. Cannot publish.")
+                return False
 
-        try:
-            # Get or create publisher
-            if topic_name not in self._publishers:
-                self._publishers[topic_name] = roslibpy.Topic(
-                    self.client, topic_name, message_type
-                )
-                self._publishers[topic_name].advertise()
+            try:
+                # Get or create publisher
+                if topic_name not in self._publishers:
+                    self._publishers[topic_name] = roslibpy.Topic(
+                        self.client, topic_name, message_type
+                    )
+                    self._publishers[topic_name].advertise()
 
-            # Publish message
-            self._publishers[topic_name].publish(roslibpy.Message(message))
-            return True
+                # Publish message
+                self._publishers[topic_name].publish(roslibpy.Message(message))
+                return True
 
-        except Exception as e:
-            print(f"Failed to publish to {topic_name}: {e}")
-            return False
+            except Exception as e:
+                print(f"Failed to publish to {topic_name}: {e}")
+                return False
 
     def subscribe(
         self, topic_name: str, message_type: str, callback: Optional[Callable] = None
@@ -143,41 +150,43 @@ class RosbridgeManager:
         Returns:
             True if subscribed successfully, False otherwise
         """
-        if not self.is_connected:
-            print("Not connected to rosbridge. Cannot subscribe.")
-            return False
+        with self._topic_lock:
+            if not self.is_connected:
+                print("Not connected to rosbridge. Cannot subscribe.")
+                return False
 
-        try:
-            # Don't subscribe twice
-            if topic_name in self._subscribers:
+            try:
+                # Don't subscribe twice
+                if topic_name in self._subscribers:
+                    return True
+
+                # Create subscription
+                topic = roslibpy.Topic(self.client, topic_name, message_type)
+
+                # Default callback stores latest message
+                def default_callback(message):
+                    self._latest_messages[topic_name] = message
+                    logging.getLogger(__name__).debug("Received ROS message on %s", topic_name)
+                    if callback:
+                        callback(message)
+
+                topic.subscribe(default_callback)
+                self._subscribers[topic_name] = topic
+
                 return True
 
-            # Create subscription
-            topic = roslibpy.Topic(self.client, topic_name, message_type)
-
-            # Default callback stores latest message
-            def default_callback(message):
-                self._latest_messages[topic_name] = message
-                print(f"[ROS Manager] Received message on {topic_name}: {message}")
-                if callback:
-                    callback(message)
-
-            topic.subscribe(default_callback)
-            self._subscribers[topic_name] = topic
-
-            return True
-
-        except Exception as e:
-            print(f"Failed to subscribe to {topic_name}: {e}")
-            return False
+            except Exception as e:
+                print(f"Failed to subscribe to {topic_name}: {e}")
+                return False
 
     def unsubscribe(self, topic_name: str):
         """Unsubscribe from a topic"""
-        if topic_name in self._subscribers:
-            self._subscribers[topic_name].unsubscribe()
-            del self._subscribers[topic_name]
-            if topic_name in self._latest_messages:
-                del self._latest_messages[topic_name]
+        with self._topic_lock:
+            if topic_name in self._subscribers:
+                self._subscribers[topic_name].unsubscribe()
+                del self._subscribers[topic_name]
+                if topic_name in self._latest_messages:
+                    del self._latest_messages[topic_name]
 
     def get_latest_message(self, topic_name: str) -> Optional[Dict[str, Any]]:
         """Get the latest message received on a subscribed topic"""
@@ -185,12 +194,13 @@ class RosbridgeManager:
 
     def get_status(self) -> Dict[str, Any]:
         """Get connection status and info"""
-        return {
-            "connected": self.is_connected,
-            "url": self.config.url,
-            "subscribed_topics": list(self._subscribers.keys()),
-            "published_topics": list(self._publishers.keys()),
-        }
+        with self._topic_lock:
+            return {
+                "connected": self.is_connected,
+                "url": self.config.url,
+                "subscribed_topics": list(self._subscribers.keys()),
+                "published_topics": list(self._publishers.keys()),
+            }
 
     # Convenience methods for common operations
 

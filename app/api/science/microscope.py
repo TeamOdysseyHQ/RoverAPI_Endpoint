@@ -1,4 +1,3 @@
-import fcntl
 import json
 import os
 import time
@@ -12,13 +11,14 @@ import cv2
 from fastapi import APIRouter, Form, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from app.utils.json_store import load_json, save_json, save_json_locked
+from app.utils.expeditions import EXPEDITION_BASE_DIR, get_safe_expedition_dir
+
 router = APIRouter()
 
 IMAGE_DIR = "storage/images"
 META_FILE = "storage/metadata.json"
-EXPEDITION_BASE_DIR = os.environ.get(
-    "EXPEDITION_BASE_DIR", "/home/administrator/expeditions/unprocessed"
-)
+
 
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
@@ -31,10 +31,12 @@ class MicroscopeManager:
         self.streaming_status: bool = False
         self.lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1)
+        self._opening_future = None
         self.device_path = "/dev/camera-microscope"
 
         # WebSocket client tracking
         self.ws_clients: list = []
+        self._clients_lock = threading.Lock()
 
     def _open_microscope_with_timeout(self, timeout: float = 5.0):
         """Open microscope with timeout to prevent hanging"""
@@ -43,9 +45,20 @@ class MicroscopeManager:
             return cv2.VideoCapture(self.device_path)
 
         try:
+            if self._opening_future is not None and not self._opening_future.done():
+                return None
             future = self._executor.submit(open_device)
+            self._opening_future = future
             return future.result(timeout=timeout)
         except FuturesTimeoutError:
+            def release_late_result(completed):
+                if not completed.cancelled():
+                    try:
+                        completed.result().release()
+                    except Exception:
+                        pass
+            if not future.cancel():
+                future.add_done_callback(release_late_result)
             print(f"[Microscope] Timeout opening device {self.device_path}")
             return None
         except Exception as e:
@@ -67,6 +80,7 @@ class MicroscopeManager:
                 return False
 
             if not microscope.isOpened():
+                microscope.release()
                 print(f"[Microscope] Device not opened")
                 return False
 
@@ -74,6 +88,7 @@ class MicroscopeManager:
             microscope.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             microscope.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             microscope.set(cv2.CAP_PROP_FPS, fps)
+            microscope.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             self.microscope = microscope
             self.microscope_info = {"width": width, "height": height, "fps": fps}
@@ -125,24 +140,27 @@ class MicroscopeManager:
                 "width": int(self.microscope.get(cv2.CAP_PROP_FRAME_WIDTH)),
                 "height": int(self.microscope.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                 "fps": int(self.microscope.get(cv2.CAP_PROP_FPS)),
-                "ws_clients": len(self.ws_clients),
+                "ws_clients": self.get_ws_client_count(),
             }
 
     # WebSocket client management methods
-    def add_ws_client(self, websocket):
+    def add_ws_client(self, websocket, max_clients=5):
         """Register WebSocket client"""
-        with self.lock:
+        with self._clients_lock:
+            if len(self.ws_clients) >= max_clients:
+                return False
             self.ws_clients.append(websocket)
+            return True
 
     def remove_ws_client(self, websocket):
         """Unregister WebSocket client"""
-        with self.lock:
+        with self._clients_lock:
             if websocket in self.ws_clients:
                 self.ws_clients.remove(websocket)
 
     def get_ws_client_count(self) -> int:
         """Get WebSocket client count"""
-        with self.lock:
+        with self._clients_lock:
             return len(self.ws_clients)
 
 
@@ -150,49 +168,11 @@ class MicroscopeManager:
 microscope_manager = MicroscopeManager()
 
 
-def load_json(path):
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
-    return []
-
-
-def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-def save_json_locked(path, updater):
-    """Atomically read-modify-write a JSON file with file locking."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    lock_path = path + ".lock"
-    with open(lock_path, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            data = load_json(path)
-            data = updater(data)
-            save_json(path, data)
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-    return data
-
-
-def get_safe_expedition_dir(expedition_id: str) -> str:
-    """Validate expedition_id and return a safe directory path."""
-    sanitized = "".join(c for c in expedition_id if c.isalnum() or c in "._-")
-    if not sanitized:
-        raise HTTPException(status_code=400, detail="Expedition ID must be provided.")
-    base = Path(EXPEDITION_BASE_DIR).resolve()
-    target = (base / sanitized).resolve()
-    if not str(target).startswith(str(base)):
-        raise HTTPException(status_code=400, detail="Invalid expedition ID.")
-    os.makedirs(str(target), exist_ok=True)
-    return str(target)
 
 
 @router.post("/microscope/start")
-async def start_microscope(
-    width: int = Form(640), height: int = Form(480), fps: int = Form(30)
+def start_microscope(
+    width: int = Form(640, ge=1), height: int = Form(480, ge=1), fps: int = Form(30, ge=1, le=60)
 ):
     """Start microscope device"""
     success = microscope_manager.start_microscope(width, height, fps)
@@ -210,7 +190,7 @@ async def start_microscope(
 
 
 @router.post("/microscope/stop")
-async def stop_microscope():
+def stop_microscope():
     """Stop microscope device"""
     success = microscope_manager.stop_microscope()
     if not success:
@@ -219,13 +199,13 @@ async def stop_microscope():
 
 
 @router.get("/microscope/status")
-async def microscope_status():
+def microscope_status():
     """Get microscope status"""
     return {"success": True, "status": microscope_manager.get_status()}
 
 
 @router.post("/microscope/capture")
-async def capture_from_microscope(
+def capture_from_microscope(
     latitude: float = Form(0),
     longitude: float = Form(0),
     altitude: float = Form(0),
@@ -244,13 +224,14 @@ async def capture_from_microscope(
         )
 
     # Save frame as JPEG
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     filename = f"{timestamp}_microscope_capture.jpg"
     img_dir_loc = get_safe_expedition_dir(expedition_id) if expedition_id else IMAGE_DIR
 
     filepath = os.path.join(img_dir_loc, filename)
 
-    cv2.imwrite(filepath, frame)
+    if not cv2.imwrite(filepath, frame):
+        raise HTTPException(status_code=500, detail="Failed to save captured image")
     file_size = os.path.getsize(filepath)
 
     # Get actual image dimensions
@@ -296,6 +277,7 @@ def generate_video_stream(target_fps: int = 30, quality: int = 85):
     frame_delay = 1.0 / target_fps
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
     while True:
+        frame_started = time.monotonic()
         frame = microscope_manager.capture_frame()
         if frame is None:
             break
@@ -310,11 +292,11 @@ def generate_video_stream(target_fps: int = 30, quality: int = 85):
         # Yield frame in multipart format
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
-        time.sleep(frame_delay)
+        time.sleep(max(0, frame_delay - (time.monotonic() - frame_started)))
 
 
 @router.get("/microscope/stream")
-async def video_stream(
+def video_stream(
     fps: int = Query(30, ge=1, le=60),
     quality: int = Query(85, ge=1, le=100),
 ):

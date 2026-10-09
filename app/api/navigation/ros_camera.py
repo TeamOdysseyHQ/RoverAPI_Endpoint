@@ -1,16 +1,13 @@
 """ROS camera image streaming endpoints"""
 
 import asyncio
-import base64
-import io
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from app.ros.manager import ros_manager
 from app.ros.topics import CAMERA_COLOR_IMAGE_RAW_TOPIC
-from PIL import Image
-import numpy as np
+from app.api.ros_image import encode_ros_jpeg
 
 
 router = APIRouter()
@@ -115,49 +112,20 @@ async def stream_camera_mjpeg(
     topic = topic_name or CAMERA_COLOR_IMAGE_RAW_TOPIC
     frame_delay = 1.0 / fps
 
-    def _decode_frame(image_msg, quality):
-        """Decode ROS image message to JPEG bytes (CPU-intensive, runs in executor)"""
-        width = image_msg.get("width", 0)
-        height = image_msg.get("height", 0)
-        encoding = image_msg.get("encoding", "rgb8")
-        data_base64 = image_msg.get("data", "")
-
-        if not data_base64 or width <= 0 or height <= 0:
-            return None
-
-        image_data = base64.b64decode(data_base64)
-
-        if encoding == "rgb8":
-            image_array = np.frombuffer(image_data, dtype=np.uint8)
-            image_array = image_array.reshape((height, width, 3))
-            image = Image.fromarray(image_array, mode="RGB")
-        elif encoding == "bgr8":
-            image_array = np.frombuffer(image_data, dtype=np.uint8)
-            image_array = image_array.reshape((height, width, 3))
-            image_array = image_array[:, :, ::-1]
-            image = Image.fromarray(image_array, mode="RGB")
-        elif encoding == "mono8":
-            image_array = np.frombuffer(image_data, dtype=np.uint8)
-            image_array = image_array.reshape((height, width))
-            image = Image.fromarray(image_array, mode="L")
-        else:
-            return None
-
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=quality)
-        return buffer.getvalue()
-
     async def generate_frames():
         """Generate MJPEG frames from ROS image messages"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        last_message = None
 
-        while True:
+        while ros_manager.is_connected:
+            started = loop.time()
             image_msg = ros_manager.get_latest_camera_image(topic_name=topic)
 
-            if image_msg:
+            if image_msg and image_msg is not last_message:
+                last_message = image_msg
                 try:
                     frame = await loop.run_in_executor(
-                        None, _decode_frame, image_msg, quality
+                        None, encode_ros_jpeg, image_msg, quality
                     )
 
                     if frame is not None:
@@ -169,7 +137,7 @@ async def stream_camera_mjpeg(
                 except Exception as e:
                     print(f"Error processing frame: {e}")
 
-            await asyncio.sleep(frame_delay)
+            await asyncio.sleep(max(0, frame_delay - (loop.time() - started)))
 
     return StreamingResponse(
         generate_frames(),

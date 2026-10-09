@@ -11,6 +11,8 @@ Endpoints:
     GET /microscope/webrtc/status   - Connection status
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -55,7 +57,7 @@ async def webrtc_offer(request: WebRTCOfferRequest):
     }
     ```
     """
-    status = microscope_manager.get_status()
+    status = await asyncio.to_thread(microscope_manager.get_status)
     if not status["active"]:
         raise HTTPException(
             status_code=400,

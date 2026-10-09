@@ -29,7 +29,6 @@ def sci_sensor_data_handler():
         if not success:
             raise SensorDataFetchFailure(f"Failed to subscribe to {SCIENCE_DATA_TOPIC}")
             
-    time.sleep(0.5)
     data = ros_manager.get_latest_message(SCIENCE_DATA_TOPIC)
 
     if data is None:
@@ -39,7 +38,9 @@ def sci_sensor_data_handler():
         if data is None:
             raise SensorDataFetchFailure("No data received from science sensors.")
         
-    data = data["data"]  # Dict access, not attribute
+    data = data.get("data", [])
+    if not isinstance(data, (list, tuple)) or len(data) < 14:
+        raise SensorDataFetchFailure("Expected 14 science sensor values")
     colourless = bool(data[0])
     purple = bool(data[1])
     humidity = data[2]
@@ -75,7 +76,7 @@ def sci_sensor_data_handler():
     return sensor_data
 
 @router.post("/sensor_data")
-async def sci_sensor_data():
+def sci_sensor_data():
 
     try:
         data = sci_sensor_data_handler()

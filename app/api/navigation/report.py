@@ -1,3 +1,6 @@
+from app.utils.report_files import is_report_file
+from starlette.concurrency import run_in_threadpool
+from app.utils.expeditions import (EXPEDITION_BASE_DIR, EXPEDITION_PROCESSED_DIR, expedition_path, create_expedition)
 from fastapi import APIRouter, Query, Response, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from datetime import datetime
@@ -193,20 +196,9 @@ def generate_route_analysis(metadata: List[Dict], waypoints: List[Dict]) -> Dict
 
 
 @router.post("/assign_expedition")
-async def assign_expedition():
+def assign_expedition():
     """Assign a new expedition ID for reconnaissance mission"""
-    eid = str(uuid.uuid4()).replace("-", "")
-    counter = 0
-
-    while os.path.exists("/home/administratror/expeditions/unprocessed/" + eid):
-        if counter > 5:
-            eid = str(time.time()).replace(".", "")  # fallback to timestamp
-            break
-
-        eid = str(uuid.uuid4()).replace("-", "")
-        counter += 1
-
-    os.makedirs("/home/administratror/expeditions/unprocessed/" + eid, exist_ok=True)
+    eid = create_expedition()
     return {
         "success": True,
         "status": "Success",
@@ -216,10 +208,10 @@ async def assign_expedition():
 
 
 @router.get("/expedition_check/{expedition_id}")
-async def expedition_check(expedition_id: str):
+def expedition_check(expedition_id: str):
     """Check expedition status"""
-    unprocessed_path = f"/home/administratror/expeditions/unprocessed/{expedition_id}"
-    processed_path = f"/home/administratror/expeditions/processed/{expedition_id}"
+    unprocessed_path = expedition_path(expedition_id)
+    processed_path = expedition_path(expedition_id, processed=True)
 
     if os.path.exists(processed_path):
         status = "processed"
@@ -238,11 +230,11 @@ async def expedition_check(expedition_id: str):
 
 
 @router.post("/expeditions_list")
-async def expeditions_list():
+def expeditions_list():
     """List all expeditions"""
     try:
-        unprocessed = os.listdir("/home/administratror/expeditions/unprocessed/")
-        processed = os.listdir("/home/administratror/expeditions/processed/")
+        unprocessed = os.listdir(EXPEDITION_BASE_DIR) if os.path.isdir(EXPEDITION_BASE_DIR) else []
+        processed = os.listdir(EXPEDITION_PROCESSED_DIR) if os.path.isdir(EXPEDITION_PROCESSED_DIR) else []
 
         for expedition in processed:
             if expedition in unprocessed:
@@ -250,11 +242,11 @@ async def expeditions_list():
 
             # Check for navigation metadata
             if os.path.exists(
-                f"/home/administratror/expeditions/processed/{expedition}/nav_metadata.dat"
+                os.path.join(expedition_path(expedition, processed=True), "nav_metadata.dat")
             ):
                 try:
                     with open(
-                        f"/home/administratror/expeditions/processed/{expedition}/nav_metadata.dat",
+                        os.path.join(expedition_path(expedition, processed=True), "nav_metadata.dat"),
                         "r",
                     ) as meta_f:
                         report_id = meta_f.readline().strip()
@@ -292,11 +284,11 @@ async def nav_reports(request: Request):
     """Generate Typst-based navigation reconnaissance report"""
     data = (
         await request.json()
-        if request.headers.get("content-type") == "application/json"
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "application/json"
         else None
     )
 
-    if not (data and data.get("mission_notes")):
+    if not (isinstance(data, dict) and data.get("mission_notes")):
         return {
             "success": False,
             "status": "Error",
@@ -311,8 +303,8 @@ async def nav_reports(request: Request):
         nav_handler = NavigationReportHandler(
             expedition_id=expedition_id, object_notes=object_notes
         )
-        rid, report_path = nav_handler.create_report(
-            data["mission_notes"], force_gen=force_generate
+        rid, report_path = await run_in_threadpool(
+            nav_handler.create_report, data["mission_notes"], force_gen=force_generate
         )
 
         if not report_path:
@@ -354,16 +346,16 @@ async def nav_reports(request: Request):
 
 def verify_nav_report_access(rid: str | None, rpath: str | None) -> int:
     """Verify navigation report exists"""
-    if rid and os.path.exists(os.path.join(NAV_REPORT_OUTPUT_DIR, f"{rid}.pdf")):
+    if rid and is_report_file(os.path.join(NAV_REPORT_OUTPUT_DIR, f"{rid}.pdf"), [NAV_REPORT_OUTPUT_DIR]):
         return 1
-    elif rpath and os.path.exists(rpath):
+    elif rpath and is_report_file(rpath, [NAV_REPORT_OUTPUT_DIR, NAV_REPORT_SOURCE_DIR]):
         return 2
 
     return 0  # unknown report!
 
 
 @router.get("/nav_report/{id}")
-async def get_nav_report_by_id(id: str):
+def get_nav_report_by_id(id: str):
     """Download navigation report by ID"""
     info_code = verify_nav_report_access(id, None)
 
@@ -390,7 +382,7 @@ async def get_nav_report_by_id(id: str):
 
 
 @router.get("/nav_reports/ids")
-async def list_nav_reports():
+def list_nav_reports():
     """List all navigation report IDs"""
     try:
         reports = os.listdir(NAV_REPORT_OUTPUT_DIR)
@@ -412,7 +404,7 @@ async def list_nav_reports():
 
 
 @router.get("/nav_reports/metadata")
-async def get_nav_reports_metadata():
+def get_nav_reports_metadata():
     """Get detailed metadata for all navigation reports"""
     try:
         reports = []
@@ -454,12 +446,12 @@ async def get_nav_reports_metadata():
 
 
 @router.delete("/nav_report/{id}")
-async def delete_nav_report(id: str):
+def delete_nav_report(id: str):
     """Delete a navigation report by ID"""
     try:
         pdf_path = os.path.join(NAV_REPORT_OUTPUT_DIR, f"{id}.pdf")
 
-        if not os.path.exists(pdf_path):
+        if not is_report_file(pdf_path, [NAV_REPORT_OUTPUT_DIR]):
             return {
                 "success": False,
                 "status": "Error",
@@ -782,7 +774,7 @@ def generate_pdf_with_images(
 
 
 @router.post("/generate_report")
-async def generate_report(mission_id: str = Query("default")):
+def generate_report(mission_id: str = Query("default")):
     """Generate mission report"""
     metadata = load_json(META_FILE)
     waypoints = load_json(WAYPOINT_FILE)
@@ -1157,7 +1149,7 @@ async def generate_report(mission_id: str = Query("default")):
 
 
 @router.post("/export_data")
-async def export_data(mission_id: str = Query(None), format: str = Query("json")):
+def export_data(mission_id: str = Query(None), format: str = Query("json")):
     """Export mission data"""
     export_format = format
 
@@ -1208,7 +1200,7 @@ async def export_data(mission_id: str = Query(None), format: str = Query("json")
 
 
 @router.post("/reports")
-async def list_reports():
+def list_reports():
     """List reports"""
     reports = []
     for filename in os.listdir(REPORT_DIR):
@@ -1221,7 +1213,7 @@ async def list_reports():
                     "timestamp": filename.replace("report_", "").replace(".html", ""),
                     "size_bytes": stat.st_size,
                     "created": datetime.fromtimestamp(stat.st_ctime).isoformat(),
-                    "url": f"/api/report/download/{filename}",
+                    "url": f"/api/nav/download/{filename}",
                 }
             )
 
@@ -1231,7 +1223,7 @@ async def list_reports():
 
 
 @router.get("/download/{filename}")
-async def download_report(filename: str):
+def download_report(filename: str):
     """Download report file"""
     from fastapi import HTTPException
 
@@ -1239,14 +1231,14 @@ async def download_report(filename: str):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     filepath = os.path.join(REPORT_DIR, filename)
-    if not os.path.exists(filepath):
+    if not is_report_file(filepath, [REPORT_DIR], suffix=".html"):
         raise HTTPException(status_code=404, detail="Report not found")
 
     return FileResponse(filepath, filename=filename)
 
 
 @router.post("/route_analysis")
-async def get_route_analysis(mission_id: str = Query("default")):
+def get_route_analysis(mission_id: str = Query("default")):
     """Get route analysis"""
 
     metadata = load_json(META_FILE)
@@ -1266,7 +1258,7 @@ async def get_route_analysis(mission_id: str = Query("default")):
 
 
 @router.post("/generate_comprehensive_report")
-async def generate_comprehensive_report(mission_id: str = Query("default")):
+def generate_comprehensive_report(mission_id: str = Query("default")):
     """
     Generate comprehensive mission report with:
     - Route analysis (distance, speed, duration)
