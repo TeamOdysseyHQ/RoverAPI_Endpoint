@@ -69,13 +69,8 @@ also shared a topic through the onboard rosbridge; closing one preserved the
 other, and global unsubscribe returned HTTP 409 until both closed. Physical
 microscope and camera/IMU motion tests remain unverified.
 
-Additional 720p60 testing passed 72 sequential reconnects without restarting the
-camera. Viewer branches activate before linking to the live encoder, preventing
-an inactive pad from flushing the shared stream. Teardown disconnects native
-callbacks and RTP probes; file descriptors stayed at 17 throughout that test.
-
 The onboard `uv.service` now runs release
-`4d94ba53a1a90606b160567560b7cecac2ddd69f` from
+`a4794dcaae0022a793b0b83ae53cc647c1b30856` from
 `~/.local/share/rover-api/releases/` on port 6767. Its storage directory links to
 the existing checkout's storage. The previous checkout and its local edits are
 preserved. The service override is
@@ -84,6 +79,10 @@ and checkout diff are saved under
 `~/.local/share/rover-api/deployment-20261103/`. To return to the original service,
 remove that override, run `sudo systemctl daemon-reload`, then
 `sudo systemctl restart uv.service`.
+
+Rolling-shutter ("jello") correction can be enabled per camera; it runs on the
+rover before encoding, using the BNO055 gyro or the video's own optical flow. See
+[README_ROLLING_SHUTTER.md](README_ROLLING_SHUTTER.md).
 
 For local validation with native GStreamer installed:
 
