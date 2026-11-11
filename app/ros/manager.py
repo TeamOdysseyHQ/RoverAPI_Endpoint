@@ -34,6 +34,7 @@ class RosbridgeManager:
         self.config = config
         self._connection_lock = threading.RLock()
         self._topic_lock = threading.RLock()
+        self._closed = threading.Event()
         self.client: Optional[roslibpy.Ros] = None
         self.is_connected = False
         self._subscribers: Dict[str, roslibpy.Topic] = {}
@@ -52,9 +53,13 @@ class RosbridgeManager:
                 return True
 
             try:
-                self.client = roslibpy.Ros(host=self.config.host, port=self.config.port)
-                self.client.on_ready(self._on_ready)
-                self.client.on("close", self._on_close)
+                if self.client is None:
+                    self.client = roslibpy.Ros(host=self.config.host, port=self.config.port)
+                    self.client.on("ready", self._on_ready)
+                    self.client.on("close", self._on_close)
+                else:
+                    # Reconnect on roslibpy's existing event loop.
+                    self.client.call_later(0, self.client.connect)
 
                 self.client.run()
 
@@ -71,14 +76,16 @@ class RosbridgeManager:
                 self.is_connected = False
                 return False
 
-    def _on_ready(self):
+    def _on_ready(self, *_):
         """Callback when connection is established"""
         self.is_connected = True
+        self._closed.clear()
         print(f"[ROS] Connected to rosbridge at {self.config.url}")
 
-    def _on_close(self):
+    def _on_close(self, *_):
         """Callback when connection is closed"""
         self.is_connected = False
+        self._closed.set()
         print("[ROS] Disconnected from rosbridge")
 
     def disconnect(self):
@@ -96,9 +103,12 @@ class RosbridgeManager:
                 self._publishers.clear()
 
                 # Close connection
+                was_connected = self.client.is_connected
+                self._closed.clear()
                 self.client.close()
+                if was_connected:
+                    self._closed.wait(2)
                 self.is_connected = False
-                self.client = None
                 self._latest_messages.clear()
 
     def publish(

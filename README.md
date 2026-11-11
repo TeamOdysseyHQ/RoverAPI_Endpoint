@@ -85,6 +85,12 @@ and checkout diff are saved under
 remove that override, run `sudo systemctl daemon-reload`, then
 `sudo systemctl restart uv.service`.
 
+The deployed release also includes the 11 November ROS reconnect fix in
+`app/ros/manager.py`. Manual reconnect reuses the existing roslibpy event loop,
+and ready/close callbacks accept the protocol argument. The original file is
+backed up at `~/.local/share/rover-api/ros-reconnect-20261111/manager.py.before`.
+Restoring that file and restarting `uv.service` removes this lifecycle fix.
+
 For local validation with native GStreamer installed:
 
 ```sh

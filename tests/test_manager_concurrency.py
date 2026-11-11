@@ -48,6 +48,7 @@ class ManagerConcurrencyTests(unittest.TestCase):
         manager.__init__()
         manager.is_connected = True
         manager.client = Mock()
+        manager.client.close.side_effect = lambda: manager._on_close(None)
         topic = Mock()
         with patch.object(ros.roslibpy, "Topic", return_value=topic) as create_topic:
             with ThreadPoolExecutor(max_workers=5) as workers:
