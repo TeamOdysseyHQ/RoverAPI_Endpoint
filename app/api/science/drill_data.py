@@ -3,7 +3,6 @@
 from fastapi import APIRouter, HTTPException
 from app.ros.manager import ros_manager
 from app.ros.topics import SCIENCE_DRILL_DATA_TOPIC, SCIENCE_INFO_WARNING_TOPIC
-import time
 
 router = APIRouter()
 
@@ -66,22 +65,15 @@ async def get_drill_data():
             raise HTTPException(
                 status_code=500, detail="Failed to subscribe to drill data topic"
             )
-        # Wait a moment for first message
-        time.sleep(0.5)
 
     data = ros_manager.get_latest_drill_data()
 
     if data is None:
-        # Wait a bit longer for data
-        time.sleep(1.0)
-        data = ros_manager.get_latest_drill_data()
-
-        if data is None:
-            return {
-                "success": False,
-                "message": "No drill data received yet. Ensure science module is publishing.",
-                "data": None,
-            }
+        return {
+            "success": False,
+            "message": "No drill data received yet. Ensure science module is publishing.",
+            "data": None,
+        }
 
     return {
         "success": True,
@@ -139,7 +131,6 @@ async def get_latest_warning():
             raise HTTPException(
                 status_code=500, detail="Failed to subscribe to warnings topic"
             )
-        time.sleep(0.5)
 
     warning_code = ros_manager.get_latest_science_warning()
 

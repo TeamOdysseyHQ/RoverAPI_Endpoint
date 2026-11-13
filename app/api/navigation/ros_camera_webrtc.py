@@ -4,7 +4,7 @@ import time
 
 
 from app.api.ros_image import decode_ros_image
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
@@ -54,11 +54,11 @@ def _make_ros_capture(topic: str):
 
 
 @router.post("/ros/camera/webrtc/offer")
-async def webrtc_offer(request: WebRTCOfferRequest, topic_name: Optional[str] = None):
+async def webrtc_offer(http_request: Request, request: WebRTCOfferRequest, topic_name: Optional[str] = None):
     """
     Establish a WebRTC peer connection for ROS camera streaming.
 
-    Must subscribe to the topic first using POST /api/nav/ros/camera/subscribe.
+    Subscribes for the viewer's lifetime. Existing explicit subscriptions are preserved.
 
     Example request:
     ```json
@@ -89,6 +89,7 @@ async def webrtc_offer(request: WebRTCOfferRequest, topic_name: Optional[str] = 
             sdp_type=request.type,
             capture_fn=capture_fn,
             fps=fps,
+            peer_host=http_request.client.host if http_request.client else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))

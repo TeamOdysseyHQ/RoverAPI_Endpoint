@@ -91,6 +91,16 @@ capture_times = {}
 captured = deque(maxlen=120)
 fatal_error = None
 first_frame = False
+idle = False
+idle_since = time.monotonic()
+capture_waiters = {}
+
+def finish_captures():
+    requests = list(capture_waiters.values())
+    capture_waiters.clear()
+    for request in requests:
+        command(request)
+    return False
 
 def source_probe(pad, info):
     global first_frame, latest_raw
@@ -100,6 +110,8 @@ def source_probe(pad, info):
     captured.append(now)
     if a.device.startswith('/dev/') and a.pixel_format != 'MJPG':
         latest_raw = b.copy_deep()
+        if capture_waiters:
+            GLib.idle_add(finish_captures)
     while len(capture_times) > 240:
         del capture_times[next(iter(capture_times))]
     if not first_frame:
@@ -114,11 +126,14 @@ def save_jpeg(sink):
     if sample:
         b = sample.get_buffer()
         latest_jpeg = b.extract_dup(0, b.get_size())
+        if capture_waiters:
+            GLib.idle_add(finish_captures)
     return Gst.FlowReturn.OK
 if pipeline.get_by_name('snapshot'):
     pipeline.get_by_name('snapshot').connect('new-sample', save_jpeg)
 
 def remove_peer(peer_id):
+    global idle_since
     peer = peers.pop(peer_id, None)
     if not peer:
         return False
@@ -136,6 +151,8 @@ def remove_peer(peer_id):
     pipeline.remove(peer['bin'])
     peer['handlers'].clear()
     peer['probes'].clear()
+    if not peers:
+        idle_since = time.monotonic()
     return True
 
 def maybe_answer(peer):
@@ -145,6 +162,7 @@ def maybe_answer(peer):
             reply(peer.pop('pending'), sdp=desc.sdp.as_text(), type='answer')
 
 def add_peer(request):
+    global idle
     peer_id = request['peer_id']
     if len(peers) >= 5:
         raise ValueError('Maximum of five viewers reached')
@@ -181,6 +199,9 @@ def add_peer(request):
     if tee_pad.link(branch.get_static_pad('sink')) != Gst.PadLinkReturn.OK:
         remove_peer(peer_id)
         raise RuntimeError('Unable to link viewer to shared H.264 encoder')
+    if idle:
+        idle = False
+        pipeline.set_state(Gst.State.PLAYING)
     def packets(pad, info):
         buffers = ([info.get_buffer()] if info.type & Gst.PadProbeType.BUFFER else
                    [info.get_buffer_list().get(i) for i in range(info.get_buffer_list().length())])
@@ -240,6 +261,7 @@ def add_peer(request):
     rtc.emit('set-remote-description', offer, Gst.Promise.new_with_change_func(remote_set, None, None))
 
 def command(request):
+    global idle, idle_since
     request_id = request['id']
     try:
         cmd = request['cmd']
@@ -251,11 +273,18 @@ def command(request):
         elif cmd == 'status':
             result = {'active':fatal_error is None and first_frame, 'error':fatal_error, 'peers':list(peers),
                       'peer_status':{key:{'state':str(peer['rtc'].get_property('connection-state')), 'recent_rtp_frames':len(peer['times'])} for key,peer in peers.items()},
-                      'fps':(len(captured)-1)*1e9/(captured[-1]-captured[0]) if len(captured)>1 else 0}
+                      'idle':idle, 'fps':(len(captured)-1)*1e9/(captured[-1]-captured[0]) if not idle and len(captured)>1 else 0}
         elif cmd == 'timing':
             peer = peers.get(request['peer_id'])
             result = {'frames':list(peer['times']) if peer else [], 'server_ms':time.time_ns()/1e6}
         elif cmd == 'capture':
+            if idle or capture_waiters:
+                capture_waiters[request_id] = request
+                if idle:
+                    idle = False
+                    idle_since = time.monotonic()
+                    pipeline.set_state(Gst.State.PLAYING)
+                return False
             result = {'jpeg':base64.b64encode(latest_jpeg).decode() if latest_jpeg else None}
             if latest_raw is not None:
                 result['yuy2'] = base64.b64encode(latest_raw.extract_dup(0, latest_raw.get_size())).decode()
@@ -306,10 +335,15 @@ bus = pipeline.get_bus()
 bus.add_signal_watch()
 bus.connect('message', bus_message)
 def reap():
+    global idle
     for peer_id, peer in list(peers.items()):
         state = peer['rtc'].get_property('connection-state')
         if time.monotonic()-peer['started']>30 and state != GstWebRTC.WebRTCPeerConnectionState.CONNECTED:
             remove_peer(peer_id)
+    if not peers and not idle and not capture_waiters and time.monotonic() - idle_since >= 10:
+        pipeline.set_state(Gst.State.PAUSED)
+        captured.clear()
+        idle = True
     return True
 GLib.timeout_add_seconds(5, reap)
 threading.Thread(target=read_commands, daemon=True).start()

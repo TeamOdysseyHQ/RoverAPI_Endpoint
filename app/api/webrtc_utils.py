@@ -1,15 +1,39 @@
 """H.264 WebRTC signaling for native GStreamer sources; video never passes through FastAPI."""
 import asyncio
+from ipaddress import ip_address
+import re
 from uuid import uuid4
 
 from app.media.gstreamer import GStreamerSource
+from app.ros.manager import ros_manager
 
 MAX_WEBRTC_CLIENTS_PER_SOURCE = 5
 _peer_connections = {}
 _sources = {}
+_owned_ros_topics = set()
 _pending_peers = set()
 _source_reaper = None
 _pc_lock = asyncio.Lock()
+
+
+async def _stop_ros_source(name, source):
+    _sources.pop(name, None)
+    try:
+        await asyncio.to_thread(source.stop)
+    finally:
+        topic = name.removeprefix('ros_camera:')
+        if topic in _owned_ros_topics:
+            _owned_ros_topics.remove(topic)
+            await asyncio.to_thread(ros_manager.unsubscribe, topic)
+
+
+async def subscribe_ros_camera(topic):
+    """An explicit raw-image subscription outlives video viewers."""
+    async with _pc_lock:
+        success = await asyncio.to_thread(ros_manager.subscribe_camera_image, topic)
+        if success:
+            _owned_ros_topics.discard(topic)
+        return success
 
 
 def _ensure_reaper():
@@ -30,8 +54,7 @@ async def _reap_sources():
                     reserved = any(peer_id in _pending_peers for entries in _peer_connections.values() for peer_id, current in entries.items() if current is source)
                     if not active and not reserved:
                         for name in [n for n, current in _sources.items() if current is source]:
-                            _sources.pop(name, None)
-                            await asyncio.to_thread(source.stop)
+                            await _stop_ros_source(name, source)
     finally:
         _source_reaper = None
 
@@ -72,19 +95,55 @@ def _hardware_source(source_name):
     return source
 
 
-async def handle_offer(source_name, sdp, sdp_type, capture_fn=None, fps=60):
+def _mdns_candidates_for_peer(sdp, peer_host):
+    """Use the signaling peer's address for browser mDNS candidates on the LAN."""
+    if peer_host is None:
+        return sdp
+    try:
+        address = str(ip_address(peer_host))
+    except ValueError:
+        return sdp
+    # The radio bridge need not forward multicast DNS. Keep the browser's
+    # candidate ports and credentials while avoiding native DNS resolution.
+    return re.sub(r"^(a=candidate:\S+[ \t]+\d+[ \t]+\S+[ \t]+\d+[ \t]+)\S+\.local\.?(?=[ \t])",
+                  lambda match: match[1] + address, sdp, flags=re.MULTILINE | re.IGNORECASE)
+
+
+async def handle_offer(source_name, sdp, sdp_type, capture_fn=None, fps=60, peer_host=None):
     if sdp_type != 'offer':
         raise RuntimeError('Expected an SDP offer')
+    sdp = _mdns_candidates_for_peer(sdp, peer_host)
     peer_id = uuid4().hex
     async with _pc_lock:
         if source_name.startswith('ros_camera:'):
             source = _sources.get(source_name)
             if source is None:
-                frame = await asyncio.to_thread(capture_fn)
-                if frame is None:
-                    raise RuntimeError('ROS camera has no image yet')
-                height, width = frame.shape[:2]
-                source = await _start_ros_source(capture_fn, width, height, fps)
+                topic = source_name.removeprefix('ros_camera:')
+                owned = topic not in ros_manager._subscribers
+                subscription = None
+                try:
+                    if owned:
+                        subscription = asyncio.create_task(asyncio.to_thread(ros_manager.subscribe_camera_image, topic))
+                        if not await asyncio.shield(subscription):
+                            raise RuntimeError('ROS camera subscription failed')
+                        _owned_ros_topics.add(topic)
+                    # Allow the subscription's first message without blocking the API.
+                    for _ in range(20):
+                        frame = await asyncio.to_thread(capture_fn)
+                        if frame is not None:
+                            break
+                        await asyncio.sleep(0.05)
+                    if frame is None:
+                        raise RuntimeError('ROS camera has no image yet')
+                    height, width = frame.shape[:2]
+                    source = await _start_ros_source(capture_fn, width, height, fps)
+                except BaseException:
+                    if owned:
+                        if subscription:
+                            await subscription
+                        _owned_ros_topics.discard(topic)
+                        await asyncio.to_thread(ros_manager.unsubscribe, topic)
+                    raise
                 _sources[source_name] = source
             # A ROS encoder is ours before the first viewer is reserved.
             _ensure_reaper()
@@ -124,8 +183,7 @@ async def close_peer_connection(source_name, peer_id):
     async with _pc_lock:
         if source_name.startswith('ros_camera:') and source_name not in _peer_connections:
             if _sources.get(source_name) is source:
-                _sources.pop(source_name, None)
-                await asyncio.to_thread(source.stop)
+                await _stop_ros_source(source_name, source)
     return True
 
 
@@ -143,8 +201,7 @@ async def get_connection_count(source_name):
         source = next(iter(entries.values()))
         active = await _prune(source)
         if not active and source_name.startswith('ros_camera:') and not _pending_peers:
-            _sources.pop(source_name, None)
-            await asyncio.to_thread(source.stop)
+            await _stop_ros_source(source_name, source)
         return len(active)
 
 
@@ -171,6 +228,5 @@ async def shutdown_media():
         await asyncio.gather(task, return_exceptions=True)
     for name in list(_peer_connections):
         await close_all_connections(name)
-    for source in set(_sources.values()):
-        await asyncio.to_thread(source.stop)
-    _sources.clear()
+    for name, source in list(_sources.items()):
+        await _stop_ros_source(name, source)

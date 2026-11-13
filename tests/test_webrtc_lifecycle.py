@@ -30,13 +30,35 @@ class Source:
     def stop(self):self.stopped = True
 
 
+class MdnsCandidateTests(unittest.TestCase):
+    def test_mdns_uses_validated_api_address_and_preserves_numeric_candidates(self):
+        offer = ('a=ice-pwd:unchanged\r\n'
+                 'a=candidate:0 1 UDP 2122252543 browser.LOCAL. 49152 typ host\r\n'
+                 'a=candidate:1 1 udp 123 192.168.1.80 5000 typ host\r\n'
+                 'a=candidate:2 1 udp 456 203.0.113.8 6000 typ srflx raddr 192.168.1.80 rport 5000\r\n')
+        for host in ['192.168.1.159', '2001:db8::1234']:
+            with self.subTest(host=host):
+                self.assertEqual(rtc._mdns_candidates_for_peer(offer, host),
+                                 offer.replace('browser.LOCAL.', host))
+
+    def test_missing_or_non_numeric_api_address_leaves_offer_unchanged(self):
+        offer = 'a=candidate:0 1 UDP 123 browser.local 49152 typ host\r\n'
+        for host in [None, 'proxy.local', 'not an IP']:
+            with self.subTest(host=host):
+                self.assertEqual(rtc._mdns_candidates_for_peer(offer, host), offer)
+
+
 class WebRTCLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        rtc._peer_connections.clear(); rtc._sources.clear(); rtc._pending_peers.clear()
+        rtc._peer_connections.clear(); rtc._sources.clear(); rtc._pending_peers.clear(); rtc._owned_ros_topics.clear()
         rtc._pc_lock = asyncio.Lock()
         self.source = Source()
         self.patcher = patch.object(rtc, '_hardware_source', return_value=self.source)
         self.patcher.start()
+        self.ros = Mock(_subscribers={})
+        self.ros.subscribe_camera_image.return_value = True
+        self.ros_patcher = patch.object(rtc, 'ros_manager', self.ros)
+        self.ros_patcher.start()
     async def asyncTearDown(self):
         for name in list(rtc._peer_connections):await rtc.close_all_connections(name)
         if rtc._source_reaper:
@@ -44,6 +66,57 @@ class WebRTCLifecycleTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self.patcher.stop()
+        self.ros_patcher.stop()
+
+    async def test_ros_subscription_is_released_only_after_the_last_viewer(self):
+        frame = Mock(shape=(240, 320, 3))
+        with patch.object(rtc, '_start_ros_source', new=AsyncMock(return_value=self.source)):
+            a = await rtc.handle_offer('ros_camera:/image', 'offer', 'offer', lambda: frame)
+            b = await rtc.handle_offer('ros_camera:/image', 'offer', 'offer', lambda: frame)
+        self.ros.subscribe_camera_image.assert_called_once_with('/image')
+        await rtc.close_peer_connection('ros_camera:/image', a['peer_id'])
+        self.ros.unsubscribe.assert_not_called()
+        await rtc.close_peer_connection('ros_camera:/image', b['peer_id'])
+        self.assertTrue(self.source.stopped)
+        self.ros.unsubscribe.assert_called_once_with('/image')
+
+    async def test_existing_explicit_ros_subscription_outlives_video(self):
+        self.ros._subscribers['/image'] = object()
+        with patch.object(rtc, '_start_ros_source', new=AsyncMock(return_value=self.source)):
+            a = await rtc.handle_offer('ros_camera:/image', 'offer', 'offer', lambda: Mock(shape=(240, 320, 3)))
+        await rtc.close_peer_connection('ros_camera:/image', a['peer_id'])
+        self.ros.subscribe_camera_image.assert_not_called()
+        self.ros.unsubscribe.assert_not_called()
+
+    async def test_explicit_subscription_added_during_video_is_preserved(self):
+        with patch.object(rtc, '_start_ros_source', new=AsyncMock(return_value=self.source)):
+            a = await rtc.handle_offer('ros_camera:/image', 'offer', 'offer', lambda: Mock(shape=(240, 320, 3)))
+        self.assertTrue(await rtc.subscribe_ros_camera('/image'))
+        await rtc.close_peer_connection('ros_camera:/image', a['peer_id'])
+        self.ros.unsubscribe.assert_not_called()
+
+    async def test_failed_ros_encoder_start_releases_its_subscription(self):
+        with patch.object(rtc, '_start_ros_source', new=AsyncMock(side_effect=RuntimeError('encoder failed'))):
+            with self.assertRaisesRegex(RuntimeError, 'encoder failed'):
+                await rtc.handle_offer('ros_camera:/image', 'offer', 'offer', lambda: Mock(shape=(240, 320, 3)))
+        self.ros.unsubscribe.assert_called_once_with('/image')
+        self.assertEqual(rtc._owned_ros_topics, set())
+
+    async def test_cancelled_subscription_waits_for_completion_before_unsubscribing(self):
+        entered, release = threading.Event(), threading.Event()
+        def subscribe(_topic):
+            entered.set()
+            release.wait(2)
+            return True
+        self.ros.subscribe_camera_image.side_effect = subscribe
+        starting = asyncio.create_task(rtc.handle_offer('ros_camera:/image', 'offer', 'offer', lambda: None))
+        self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+        starting.cancel()
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await starting
+        self.ros.unsubscribe.assert_called_once_with('/image')
+        self.assertEqual(rtc._owned_ros_topics, set())
     async def offer(self, name='camera:kreo'):
         return await rtc.handle_offer(name, 'offer', 'offer')
     async def test_one_viewer_closes_without_stopping_shared_encoder(self):
@@ -112,7 +185,7 @@ class WebRTCLifecycleTests(unittest.IsolatedAsyncioTestCase):
         async def wait_for_reap(_delay):
             await allow_reap.wait()
         frame = Mock(shape=(240, 320, 3))
-        with patch.object(rtc, '_start_ros_source', new=AsyncMock(return_value=self.source)), patch.object(rtc, '_prune', side_effect=prune), patch.object(rtc.asyncio, 'sleep', side_effect=wait_for_reap):
+        with patch.dict(rtc.ros_manager._subscribers, {'test': Mock()}), patch.object(rtc, '_start_ros_source', new=AsyncMock(return_value=self.source)), patch.object(rtc, '_prune', side_effect=prune), patch.object(rtc.asyncio, 'sleep', side_effect=wait_for_reap):
             starting = asyncio.create_task(rtc.handle_offer('ros_camera:test', 'offer', 'offer', lambda: frame))
             await asyncio.wait_for(entered.wait(), 2)
             starting.cancel()

@@ -49,6 +49,11 @@ its viewers. A camera already shared at another mode returns HTTP 409 rather tha
 silently changing other viewers' capture settings. Change its mode after stopping
 the camera. Still-image capture reuses the current camera buffer.
 
+With no viewers, hardware capture and encoding pause after about 10–15 seconds.
+A new viewer resumes the same capture mode. A still capture wakes a paused camera
+and waits for a fresh buffer. ROS video subscriptions are released with their last
+viewer; explicit raw-image subscriptions remain until explicitly unsubscribed.
+
 The displayed latency matches source-buffer delivery timestamps to browser video
 presentation callbacks using RTP timestamps. Clock probes use the peer's data
 channel. The value excludes camera exposure, camera-internal buffering, and screen
@@ -74,22 +79,25 @@ camera. Viewer branches activate before linking to the live encoder, preventing
 an inactive pad from flushing the shared stream. Teardown disconnects native
 callbacks and RTP probes; file descriptors stayed at 17 throughout that test.
 
-The onboard `uv.service` now runs release
-`4d94ba53a1a90606b160567560b7cecac2ddd69f` from
-`~/.local/share/rover-api/releases/` on port 6767. Its storage directory links to
-the existing checkout's storage. The previous checkout and its local edits are
-preserved. The service override is
-`/etc/systemd/system/uv.service.d/20-h264.conf`; the original service description
-and checkout diff are saved under
-`~/.local/share/rover-api/deployment-20261103/`. To return to the original service,
-remove that override, run `sudo systemctl daemon-reload`, then
-`sudo systemctl restart uv.service`.
+The onboard `uv.service` runs snapshot `local-20261113T040750Z` from
+`~/.local/share/rover-api/releases/` on port 6767. This snapshot includes the
+current local backend changes, including the Firefox mDNS candidate fix, ROS
+subscription ownership, missing-telemetry handling, and idle camera pause/resume.
+The matching frontend source snapshot is under
+`~/.local/share/rover-ui/releases/local-20261113T040750Z/`. The laptop serves the
+working frontend with `npm run dev`.
 
-The deployed release also includes the 11 November ROS reconnect fix in
-`app/ros/manager.py`. Manual reconnect reuses the existing roslibpy event loop,
-and ready/close callbacks accept the protocol argument. The original file is
-backed up at `~/.local/share/rover-api/ros-reconnect-20261111/manager.py.before`.
-Restoring that file and restarting `uv.service` removes this lifecycle fix.
+`deployment-manifest.json` in the backend release records both source snapshots
+and their file hashes. `storage` links to the existing onboard data directory.
+The service uses the existing Python environment. The release selection is
+`/etc/systemd/system/uv.service.d/30-local-snapshot.conf`.
+
+To restore the previous release, remove `30-local-snapshot.conf`, run
+`sudo systemctl daemon-reload`, then run `sudo systemctl restart uv.service`.
+The earlier `20-h264.conf` override selects release
+`4d94ba53a1a90606b160567560b7cecac2ddd69f`. Its 11 November ROS reconnect patch
+and 13 November four-file mDNS patch remain preserved. The mDNS patch backups
+are under `~/.local/share/rover-api/browser-mdns-20261113T040044Z/`.
 
 For local validation with native GStreamer installed:
 

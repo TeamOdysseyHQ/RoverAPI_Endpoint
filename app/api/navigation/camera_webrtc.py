@@ -5,7 +5,7 @@ import time
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
 from typing import Optional
 
@@ -34,6 +34,7 @@ class WebRTCOfferRequest(BaseModel):
 async def webrtc_offer(
     camera_name: str,
     request: WebRTCOfferRequest,
+    http_request: Request,
 ):
     """
     Establish a WebRTC peer connection for camera streaming.
@@ -88,6 +89,7 @@ async def webrtc_offer(
             sdp_type=request.type,
             capture_fn=capture,
             fps=fps,
+            peer_host=http_request.client.host if http_request.client else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))

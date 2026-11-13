@@ -63,14 +63,39 @@ class CameraEndpointTests(unittest.TestCase):
             handle(**kwargs)
             return {'sdp': 'answer', 'type': 'answer', 'peer_id': 'one', 'adaptive_quality': True, 'target_fps': 24}
         ns = {'camera_manager': self.manager, 'CAMERA_DEVICES': {'science': 'device'},
-              'WebRTCOfferRequest': object, 'HTTPException': HTTPException, 'handle_offer': offer, 'asyncio': asyncio}
+              'Request': object, 'WebRTCOfferRequest': object, 'HTTPException': HTTPException, 'handle_offer': offer, 'asyncio': asyncio}
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), ns)
         self.manager.get_camera_status.return_value = {'active': True}
-        result = asyncio.run(ns['webrtc_offer']('video3', SimpleNamespace(fps=24, sdp='offer', type='offer')))
+        result = asyncio.run(ns['webrtc_offer']('video3', SimpleNamespace(fps=24, sdp='offer', type='offer'), SimpleNamespace(client=SimpleNamespace(host='192.168.1.159'))))
         self.assertEqual(result['camera_name'], 'video3')
         self.assertEqual(handle.call_args.kwargs['source_name'], 'camera:video3')
+        self.assertEqual(handle.call_args.kwargs['peer_host'], '192.168.1.159')
         with self.assertRaises(HTTPException):
-            asyncio.run(ns['webrtc_offer']('video-not-a-number', SimpleNamespace(fps=24)))
+            asyncio.run(ns['webrtc_offer']('video-not-a-number', SimpleNamespace(fps=24), SimpleNamespace(client=None)))
+
+    def test_ros_and_microscope_offers_forward_the_http_peer_address(self):
+        for filename in ['navigation/ros_camera_webrtc.py', 'science/microscope_webrtc.py']:
+            with self.subTest(route=filename):
+                path = ROOT / 'app/api' / filename
+                tree = ast.parse(path.read_text())
+                node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'webrtc_offer')
+                node.decorator_list = []
+                handle = Mock()
+                async def offer(**kwargs):
+                    handle(**kwargs)
+                    return {'sdp': 'answer', 'type': 'answer', 'peer_id': 'one', 'target_fps': 24}
+                microscope = Mock()
+                microscope.get_status.return_value = {'active': True}
+                ns = {'Request': object, 'WebRTCOfferRequest': object, 'Optional': Optional,
+                      'HTTPException': HTTPException, 'handle_offer': offer, 'asyncio': asyncio,
+                      'ros_manager': SimpleNamespace(is_connected=True), '_make_ros_capture': Mock(),
+                      'CAMERA_COLOR_IMAGE_RAW_TOPIC': '/camera/image_raw',
+                      'SOURCE_NAME': 'microscope', 'microscope_manager': microscope}
+                exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), ns)
+                http = SimpleNamespace(client=SimpleNamespace(host='192.168.1.159'))
+                body = SimpleNamespace(fps=24, sdp='offer', type='offer', topic_name='/custom/image')
+                asyncio.run(ns['webrtc_offer'](http, body))
+                self.assertEqual(handle.call_args.kwargs['peer_host'], '192.168.1.159')
 
 
 

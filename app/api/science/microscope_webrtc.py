@@ -5,7 +5,7 @@ import time
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
@@ -33,7 +33,7 @@ class WebRTCOfferRequest(BaseModel):
 
 
 @router.post("/microscope/webrtc/offer")
-async def webrtc_offer(request: WebRTCOfferRequest):
+async def webrtc_offer(http_request: Request, request: WebRTCOfferRequest):
     """
     Establish a WebRTC peer connection for microscope streaming.
 
@@ -64,6 +64,7 @@ async def webrtc_offer(request: WebRTCOfferRequest):
             sdp_type=request.type,
             capture_fn=microscope_manager.capture_frame,
             fps=fps,
+            peer_host=http_request.client.host if http_request.client else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))

@@ -3,6 +3,7 @@
 Run: python -m unittest discover -s tests -p test_webrtc_ice_integration.py
 """
 import asyncio
+import re
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -17,6 +18,37 @@ except ImportError:
 
 @unittest.skipIf(rtc is None, "aiortc/av not installed")
 class IceIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_idle_capture_pauses_and_a_new_viewer_resumes_frames(self):
+        from app.media.gstreamer import GStreamerSource
+        try:
+            native = GStreamerSource('test', 320, 240, 24)
+        except (RuntimeError, OSError) as error:
+            self.skipTest(str(error))
+        client = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+        ready = asyncio.get_running_loop().create_future()
+        client.on('track', lambda track: ready.set_result(track))
+        source = 'camera:idle-test'
+        try:
+            deadline = asyncio.get_running_loop().time() + 18
+            while not (await asyncio.to_thread(native.status))['idle']:
+                if asyncio.get_running_loop().time() > deadline:
+                    self.fail('An unused native source did not pause')
+                await asyncio.sleep(.1)
+            self.assertEqual(native.status()['fps'], 0)
+            client.addTransceiver('video', direction='recvonly')
+            await client.setLocalDescription(await client.createOffer())
+            with patch.object(rtc, '_hardware_source', return_value=native):
+                answer = await rtc.handle_offer(source, client.localDescription.sdp, 'offer')
+            await client.setRemoteDescription(RTCSessionDescription(sdp=answer['sdp'], type='answer'))
+            track = await asyncio.wait_for(ready, 5)
+            frames = [await asyncio.wait_for(track.recv(), 5) for _ in range(3)]
+            self.assertGreater(frames[-1].pts, frames[0].pts)
+            self.assertFalse(native.status()['idle'])
+        finally:
+            await client.close()
+            await rtc.close_all_connections(source)
+            native.stop()
+
     async def test_native_h264_ice_connects_and_delivers_frames(self):
         client = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         source = "camera:test"
@@ -35,6 +67,45 @@ class IceIntegrationTests(unittest.IsolatedAsyncioTestCase):
             offer = client.localDescription.sdp
             with patch.object(rtc, "_hardware_source", return_value=native):
                 answer = await asyncio.wait_for(rtc.handle_offer(source, offer, "offer", lambda: np.zeros((240, 320, 3), dtype=np.uint8), fps=24), 10)
+            self.assertIn("a=candidate:", answer["sdp"])
+            await client.setRemoteDescription(RTCSessionDescription(sdp=answer["sdp"], type=answer["type"]))
+            track = await asyncio.wait_for(track_ready, 5)
+            frames = [await asyncio.wait_for(track.recv(), 10) for _ in range(3)]
+            self.assertEqual(client.connectionState, "connected")
+            self.assertTrue(all(frame.width == 320 for frame in frames))
+            self.assertGreater(frames[-1].pts, frames[0].pts)
+            self.assertEqual(answer["target_fps"], 24)
+            self.assertEqual(await rtc.close_peer_connection(source, answer["peer_id"]), 1)
+            self.assertEqual(await rtc.get_connection_count(source), 0)
+        finally:
+            await client.close()
+            await rtc.close_all_connections(source)
+            native.stop()
+
+
+    async def test_unresolvable_browser_mdns_candidates_deliver_using_api_peer_address(self):
+        client = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+        source = "camera:mdns-test"
+        from app.media.gstreamer import GStreamerSource
+        try:
+            native = GStreamerSource('test', 320, 240, 24)
+        except (RuntimeError, OSError) as error:
+            self.skipTest(str(error))
+        track_ready = asyncio.get_running_loop().create_future()
+        @client.on("track")
+        def on_track(track):
+            track_ready.set_result(track)
+        try:
+            client.addTransceiver("video", direction="recvonly")
+            await client.setLocalDescription(await client.createOffer())
+            # Browsers conceal host IPs with mDNS names. Antenna bridges may not
+            # carry multicast DNS, but inbound ICE checks can discover the peer.
+            peer_host = next(line.split()[4] for line in client.localDescription.sdp.splitlines()
+                             if line.startswith('a=candidate:'))
+            offer = re.sub(r"(?m)^(a=candidate:\S+ \d+ \S+ \d+ )\S+",
+                           r"\g<1>unresolvable-browser.local", client.localDescription.sdp)
+            with patch.object(rtc, "_hardware_source", return_value=native):
+                answer = await asyncio.wait_for(rtc.handle_offer(source, offer, "offer", lambda: np.zeros((240, 320, 3), dtype=np.uint8), fps=24, peer_host=peer_host), 10)
             self.assertIn("a=candidate:", answer["sdp"])
             await client.setRemoteDescription(RTCSessionDescription(sdp=answer["sdp"], type=answer["type"]))
             track = await asyncio.wait_for(track_ready, 5)

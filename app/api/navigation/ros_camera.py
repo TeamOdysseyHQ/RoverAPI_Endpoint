@@ -36,7 +36,8 @@ async def subscribe_to_camera(request: SubscribeCameraRequest):
         )
 
     topic_name = request.topic_name or CAMERA_COLOR_IMAGE_RAW_TOPIC
-    success = ros_manager.subscribe_camera_image(topic_name=topic_name)
+    from app.api.webrtc_utils import subscribe_ros_camera
+    success = await subscribe_ros_camera(topic_name)
 
     if not success:
         raise HTTPException(
