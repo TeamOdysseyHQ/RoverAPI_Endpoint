@@ -24,7 +24,7 @@ async def get_api_status():
 
 
 @router.get("/ros/status")
-async def get_ros_status():
+def get_ros_status():
     """
     Get rosbridge connection status and information.
     Shows which topics are subscribed/published, connection state, etc.

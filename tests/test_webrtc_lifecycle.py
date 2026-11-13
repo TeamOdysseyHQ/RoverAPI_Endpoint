@@ -52,6 +52,7 @@ class WebRTCLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         rtc._peer_connections.clear(); rtc._sources.clear(); rtc._pending_peers.clear(); rtc._owned_ros_topics.clear()
         rtc._pc_lock = asyncio.Lock()
+        rtc._ros_locks.clear()
         self.source = Source()
         self.patcher = patch.object(rtc, '_hardware_source', return_value=self.source)
         self.patcher.start()
@@ -79,6 +80,54 @@ class WebRTCLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await rtc.close_peer_connection('ros_camera:/image', b['peer_id'])
         self.assertTrue(self.source.stopped)
         self.ros.unsubscribe.assert_called_once_with('/image')
+
+    async def test_slow_status_cannot_block_an_unrelated_peer_close(self):
+        a = await self.offer()
+        entered, release = threading.Event(), threading.Event()
+        other = Source()
+        with patch.object(rtc, '_hardware_source', return_value=other):
+            b = await self.offer('camera:other')
+        original = self.source.status
+        def slow_status():
+            entered.set(); release.wait(2); return original()
+        with patch.object(self.source, 'status', side_effect=slow_status):
+            reading = asyncio.create_task(rtc.get_connection_count('camera:kreo'))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                self.assertTrue(await asyncio.wait_for(rtc.close_peer_connection('camera:other', b['peer_id']), .3))
+            finally:
+                release.set(); await reading
+        self.assertEqual(self.source.peers, {a['peer_id']})
+
+    async def test_status_snapshot_cannot_prune_a_peer_created_while_it_waits(self):
+        await self.offer()
+        entered, release = threading.Event(), threading.Event()
+        original = self.source.status
+        def slow_snapshot():
+            status = original(); entered.set(); release.wait(2); return status
+        with patch.object(self.source, 'status', side_effect=slow_snapshot):
+            reading = asyncio.create_task(rtc.get_connection_count('camera:kreo'))
+            self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+            # Reserve through the real entry point while the first status is in flight.
+            with patch.object(self.source, 'status', side_effect=original):
+                b = await self.offer()
+            release.set(); await reading
+        self.assertIn(b['peer_id'], rtc._peer_connections['camera:kreo'])
+
+    async def test_slow_ros_shutdown_does_not_block_an_unrelated_offer(self):
+        frame = Mock(shape=(240, 320, 3))
+        with patch.object(rtc, '_start_ros_source', new=AsyncMock(return_value=self.source)):
+            a = await rtc.handle_offer('ros_camera:/image', 'offer', 'offer', lambda: frame)
+        entered, release = threading.Event(), threading.Event()
+        def slow_stop(): entered.set(); release.wait(2)
+        with patch.object(self.source, 'stop', side_effect=slow_stop):
+            closing = asyncio.create_task(rtc.close_peer_connection('ros_camera:/image', a['peer_id']))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                with patch.object(rtc, '_hardware_source', return_value=Source()):
+                    await asyncio.wait_for(self.offer('camera:other'), .3)
+            finally:
+                release.set(); await closing
 
     async def test_existing_explicit_ros_subscription_outlives_video(self):
         self.ros._subscribers['/image'] = object()

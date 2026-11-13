@@ -3,6 +3,7 @@ import asyncio
 from ipaddress import ip_address
 import re
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from app.media.gstreamer import GStreamerSource
 from app.ros.manager import ros_manager
@@ -14,22 +15,32 @@ _owned_ros_topics = set()
 _pending_peers = set()
 _source_reaper = None
 _pc_lock = asyncio.Lock()
+_ros_locks = WeakValueDictionary()
+
+
+def _ros_lock(name):
+    return _ros_locks.setdefault(name, asyncio.Lock())
 
 
 async def _stop_ros_source(name, source):
-    _sources.pop(name, None)
-    try:
-        await asyncio.to_thread(source.stop)
-    finally:
-        topic = name.removeprefix('ros_camera:')
-        if topic in _owned_ros_topics:
-            _owned_ros_topics.remove(topic)
-            await asyncio.to_thread(ros_manager.unsubscribe, topic)
+    async with _ros_lock(name):
+        async with _pc_lock:
+            if _sources.get(name) is not source or _peer_connections.get(name):
+                return
+            _sources.pop(name)
+            topic = name.removeprefix('ros_camera:')
+            owned = topic in _owned_ros_topics
+            _owned_ros_topics.discard(topic)
+        try:
+            await asyncio.to_thread(source.stop)
+        finally:
+            if owned:
+                await asyncio.to_thread(ros_manager.unsubscribe, topic)
 
 
 async def subscribe_ros_camera(topic):
     """An explicit raw-image subscription outlives video viewers."""
-    async with _pc_lock:
+    async with _ros_lock(f'ros_camera:{topic}'):
         success = await asyncio.to_thread(ros_manager.subscribe_camera_image, topic)
         if success:
             _owned_ros_topics.discard(topic)
@@ -49,14 +60,18 @@ async def _reap_sources():
         while _peer_connections or _sources:
             await asyncio.sleep(5)
             async with _pc_lock:
-                for source in set(_sources.values()) | {s for peers in _peer_connections.values() for s in peers.values()}:
-                    active = await _prune(source)
-                    reserved = any(peer_id in _pending_peers for entries in _peer_connections.values() for peer_id, current in entries.items() if current is source)
-                    if not active and not reserved:
-                        for name in [n for n, current in _sources.items() if current is source]:
-                            await _stop_ros_source(name, source)
+                sources = set(_sources.values()) | {s for peers in _peer_connections.values() for s in peers.values()}
+            await asyncio.gather(*(_reap_source(source) for source in sources))
     finally:
         _source_reaper = None
+
+
+async def _reap_source(source):
+    if not await _prune(source):
+        async with _pc_lock:
+            names = [name for name, current in _sources.items() if current is source]
+        for name in names:
+            await _stop_ros_source(name, source)
 
 
 async def _start_ros_source(capture_fn, width, height, fps):
@@ -75,15 +90,30 @@ async def _start_ros_source(capture_fn, width, height, fps):
 
 
 async def _prune(source):
+    async with _pc_lock:
+        snapshot = [(name, peer_id) for name, entries in _peer_connections.items()
+                    for peer_id, current in entries.items() if current is source and peer_id not in _pending_peers]
     status = await asyncio.to_thread(source.status)
     active = set(status['peers'])
-    for name, entries in list(_peer_connections.items()):
-        for peer_id, current in list(entries.items()):
-            if current is source and peer_id not in active and peer_id not in _pending_peers:
-                entries.pop(peer_id, None)
-        if not entries:
-            _peer_connections.pop(name, None)
+    async with _pc_lock:
+        for name, peer_id in snapshot:
+            entries = _peer_connections.get(name, {})
+            if entries.get(peer_id) is source and peer_id not in active and peer_id not in _pending_peers:
+                entries.pop(peer_id)
+            if not entries:
+                _peer_connections.pop(name, None)
     return active
+
+
+async def _reserve_peer(source_name, source, peer_id):
+    await _prune(source)
+    async with _pc_lock:
+        reserved = sum(current is source for entries in _peer_connections.values() for current in entries.values())
+        if reserved >= MAX_WEBRTC_CLIENTS_PER_SOURCE:
+            raise ValueError('Maximum of five viewers reached')
+        _peer_connections.setdefault(source_name, {})[peer_id] = source
+        _pending_peers.add(peer_id)
+        _ensure_reaper()
 
 
 def _hardware_source(source_name):
@@ -114,8 +144,8 @@ async def handle_offer(source_name, sdp, sdp_type, capture_fn=None, fps=60, peer
         raise RuntimeError('Expected an SDP offer')
     sdp = _mdns_candidates_for_peer(sdp, peer_host)
     peer_id = uuid4().hex
-    async with _pc_lock:
-        if source_name.startswith('ros_camera:'):
+    if source_name.startswith('ros_camera:'):
+        async with _ros_lock(source_name):
             source = _sources.get(source_name)
             if source is None:
                 topic = source_name.removeprefix('ros_camera:')
@@ -145,18 +175,11 @@ async def handle_offer(source_name, sdp, sdp_type, capture_fn=None, fps=60, peer
                         await asyncio.to_thread(ros_manager.unsubscribe, topic)
                     raise
                 _sources[source_name] = source
-            # A ROS encoder is ours before the first viewer is reserved.
             _ensure_reaper()
-        else:
-            source = await asyncio.to_thread(_hardware_source, source_name)
-        # Worker enforces the limit across aliases of the same physical camera.
-        await _prune(source)
-        reserved = sum(current is source for entries in _peer_connections.values() for current in entries.values())
-        if reserved >= MAX_WEBRTC_CLIENTS_PER_SOURCE:
-            raise ValueError('Maximum of five viewers reached')
-        _peer_connections.setdefault(source_name, {})[peer_id] = source
-        _pending_peers.add(peer_id)
-        _ensure_reaper()
+            await _reserve_peer(source_name, source, peer_id)
+    else:
+        source = await asyncio.to_thread(_hardware_source, source_name)
+        await _reserve_peer(source_name, source, peer_id)
     try:
         answer = await asyncio.to_thread(source.request, 'offer', peer_id=peer_id, sdp=sdp)
         return {**answer, 'peer_id':peer_id, 'adaptive_quality':False,
@@ -180,10 +203,8 @@ async def close_peer_connection(source_name, peer_id):
         await asyncio.to_thread(source.request, 'close', timeout=3, peer_id=peer_id)
     except (RuntimeError, TimeoutError, OSError):
         pass  # A stopped camera has already closed its peers.
-    async with _pc_lock:
-        if source_name.startswith('ros_camera:') and source_name not in _peer_connections:
-            if _sources.get(source_name) is source:
-                await _stop_ros_source(source_name, source)
+    if source_name.startswith('ros_camera:'):
+        await _stop_ros_source(source_name, source)
     return True
 
 
@@ -196,13 +217,14 @@ async def close_all_connections(source_name):
 async def get_connection_count(source_name):
     async with _pc_lock:
         entries = dict(_peer_connections.get(source_name, {}))
-        if not entries:
-            return 0
-        source = next(iter(entries.values()))
-        active = await _prune(source)
-        if not active and source_name.startswith('ros_camera:') and not _pending_peers:
-            await _stop_ros_source(source_name, source)
-        return len(active)
+    if not entries:
+        return 0
+    source = next(iter(entries.values()))
+    active = await _prune(source)
+    if not active and source_name.startswith('ros_camera:'):
+        await _stop_ros_source(source_name, source)
+    async with _pc_lock:
+        return len(_peer_connections.get(source_name, {}))
 
 
 async def get_all_webrtc_stats():

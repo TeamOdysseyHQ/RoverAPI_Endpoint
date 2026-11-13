@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -49,26 +50,32 @@ class MultiCameraManager:
         return None
 
     def detect_cameras(self):
-        available = []
         used = set()
+        devices = []
         candidates = list(CAMERA_DEVICES.items()) + [(p.name, str(p)) for p in sorted(Path('/dev').glob('video[0-9]*'))]
         for name, device in candidates:
             real = os.path.realpath(device)
             if not os.path.exists(device) or real in used:
                 continue
+            used.add(real)
+            devices.append((name, device))
+
+        def inspect_camera(candidate):
+            name, device = candidate
             formats = self.get_supported_resolutions(name).get('formats', [])
             if not any(f['fourcc'] in ('MJPG', 'YUYV') for f in formats):
-                continue  # Ignore V4L2 metadata nodes without video capture formats.
-            used.add(real)
+                return None  # Ignore V4L2 metadata nodes without video capture formats.
             modes = [(r, f['fourcc'], rate) for f in formats for r in f.get('resolutions', [])
                      for rate in r.get('frame_rates', [30]) if 0 < rate <= 60]
             preferred = [m for m in modes if m[0]['width'] == 1280 and m[0]['height'] == 720]
             best = max(preferred or modes, key=lambda m: (m[2], m[1] == 'MJPG'), default=({'width':1280,'height':720},'MJPG',30))
-            available.append({'name':name, 'device_path':device, 'backend':'GStreamer H.264',
-                              'default_resolution':f"{best[0]['width']}x{best[0]['height']}",
-                              'default_fps':best[2], 'active':self.get_camera_status(name)['active'],
-                              'is_named':name in CAMERA_DEVICES})
-        return available
+            status = self.get_camera_status(name)
+            return {'name':name, 'device_path':device, 'backend':'GStreamer H.264',
+                    'default_resolution':f"{best[0]['width']}x{best[0]['height']}",
+                    'default_fps':best[2], 'active':status['active'], 'camera':status,
+                    'formats':formats, 'is_named':name in CAMERA_DEVICES}
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            return [camera for camera in workers.map(inspect_camera, devices) if camera is not None]
 
     def start_camera(self, camera_name, width=1280, height=720, fps=60, pixel_format=None):
         from app.media.gstreamer import GStreamerSource

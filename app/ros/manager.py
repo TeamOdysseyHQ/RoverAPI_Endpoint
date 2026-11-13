@@ -42,6 +42,8 @@ class RosbridgeManager:
         self._latest_messages: Dict[
             str, Any
         ] = {}  # Cache latest messages from subscriptions
+        self._message_metadata = {}
+        self._message_sequence = 0
 
     def connect(self) -> bool:
         """
@@ -90,17 +92,21 @@ class RosbridgeManager:
 
     def disconnect(self):
         """Disconnect from rosbridge server"""
-        with self._connection_lock, self._topic_lock:
+        with self._connection_lock:
             if self.client:
-                # Unsubscribe all topics
-                for topic in self._subscribers.values():
+                with self._topic_lock:
+                    self.is_connected = False
+                    subscribers = list(self._subscribers.values())
+                    publishers = list(self._publishers.values())
+                    self._subscribers.clear()
+                    self._publishers.clear()
+                    self._latest_messages.clear()
+                    self._message_metadata.clear()
+                # Network operations and the close callback must not hold the topic lock.
+                for topic in subscribers:
                     topic.unsubscribe()
-                self._subscribers.clear()
-
-                # Unadvertise all publishers
-                for topic in self._publishers.values():
+                for topic in publishers:
                     topic.unadvertise()
-                self._publishers.clear()
 
                 # Close connection
                 was_connected = self.client.is_connected
@@ -109,7 +115,6 @@ class RosbridgeManager:
                 if was_connected:
                     self._closed.wait(2)
                 self.is_connected = False
-                self._latest_messages.clear()
 
     def publish(
         self, topic_name: str, message_type: str, message: Dict[str, Any]
@@ -175,17 +180,25 @@ class RosbridgeManager:
 
                 # Default callback stores latest message
                 def default_callback(message):
-                    self._latest_messages[topic_name] = message
+                    with self._topic_lock:
+                        if self._subscribers.get(topic_name) is not topic:
+                            return
+                        self._message_sequence += 1
+                        self._latest_messages[topic_name] = message
+                        self._message_metadata[topic_name] = (message, self._message_sequence, time.time() * 1000, time.monotonic())
                     logging.getLogger(__name__).debug("Received ROS message on %s", topic_name)
                     if callback:
                         callback(message)
 
-                topic.subscribe(default_callback)
                 self._subscribers[topic_name] = topic
+                topic.subscribe(default_callback)
 
                 return True
 
             except Exception as e:
+                self._subscribers.pop(topic_name, None)
+                self._latest_messages.pop(topic_name, None)
+                self._message_metadata.pop(topic_name, None)
                 print(f"Failed to subscribe to {topic_name}: {e}")
                 return False
 
@@ -197,6 +210,7 @@ class RosbridgeManager:
                 del self._subscribers[topic_name]
                 if topic_name in self._latest_messages:
                     del self._latest_messages[topic_name]
+                self._message_metadata.pop(topic_name, None)
 
     def get_latest_message(self, topic_name: str) -> Optional[Dict[str, Any]]:
         """Get the latest message received on a subscribed topic"""
@@ -272,7 +286,8 @@ class RosbridgeManager:
             "raw": list[float]
         }
         """
-        raw_message = self.get_latest_message(MOTOR_RPM_TOPIC)
+        metadata = self._message_metadata.get(MOTOR_RPM_TOPIC)
+        raw_message = metadata[0] if metadata else self.get_latest_message(MOTOR_RPM_TOPIC)
         if raw_message is None:
             return None
 
@@ -289,6 +304,9 @@ class RosbridgeManager:
             "rear_left": float(data[4]),
             "rear_right": float(data[5]),
             "raw": [float(v) for v in data],
+            "sample_id": metadata[1] if metadata else None,
+            "received_at_ms": metadata[2] if metadata else None,
+            "age_ms": max(0, (time.monotonic() - metadata[3]) * 1000) if metadata else None,
         }
 
     # ARM convenience methods

@@ -44,6 +44,10 @@ keyframe interval, and a 6 Mb/s target. Other cameras use their advertised rates
 The worker temporarily disables dynamic frame-rate reduction above 30 FPS and
 restores its previous setting on shutdown. The browser must support H.264.
 
+Camera discovery queries up to four distinct V4L2 nodes at a time and returns
+their formats and running modes. The dashboard reuses that inventory until an
+explicit scan or reconnection.
+
 Closing a viewer releases that peer. **Stop** stops the shared camera and all of
 its viewers. A camera already shared at another mode returns HTTP 409 rather than
 silently changing other viewers' capture settings. Change its mode after stopping
@@ -79,12 +83,13 @@ camera. Viewer branches activate before linking to the live encoder, preventing
 an inactive pad from flushing the shared stream. Teardown disconnects native
 callbacks and RTP probes; file descriptors stayed at 17 throughout that test.
 
-The onboard `uv.service` runs snapshot `local-20261113T040750Z` from
+The onboard `uv.service` runs snapshot `local-20261113T104630Z` from
 `~/.local/share/rover-api/releases/` on port 6767. This snapshot includes the
-current local backend changes, including the Firefox mDNS candidate fix, ROS
-subscription ownership, missing-telemetry handling, and idle camera pause/resume.
+RPM sample metadata, shorter camera and ROS lock scopes, and discovery formats.
+It retains the Firefox mDNS candidate fix, ROS subscription ownership,
+missing-telemetry handling, and idle camera pause/resume.
 The matching frontend source snapshot is under
-`~/.local/share/rover-ui/releases/local-20261113T040750Z/`. The laptop serves the
+`~/.local/share/rover-ui/releases/local-20261113T104630Z/`. The laptop serves the
 working frontend with `npm run dev`.
 
 `deployment-manifest.json` in the backend release records both source snapshots
@@ -92,7 +97,9 @@ and their file hashes. `storage` links to the existing onboard data directory.
 The service uses the existing Python environment. The release selection is
 `/etc/systemd/system/uv.service.d/30-local-snapshot.conf`.
 
-To restore the previous release, remove `30-local-snapshot.conf`, run
+To restore snapshot `local-20261113T040750Z`, copy
+`previous-service-override.conf` from the current backend release to
+`/etc/systemd/system/uv.service.d/30-local-snapshot.conf`, run
 `sudo systemctl daemon-reload`, then run `sudo systemctl restart uv.service`.
 The earlier `20-h264.conf` override selects release
 `4d94ba53a1a90606b160567560b7cecac2ddd69f`. Its 11 November ROS reconnect patch
@@ -145,6 +152,11 @@ ROSBRIDGE_MAX_RETRIES=10
 ```
 
 ### ROS Topics Used
+
+Motor RPM responses include `sample_id`, `received_at_ms`, and `age_ms` inside
+`data`. These identify a message received by the API. They do not measure its
+age at the motor controller. Repeated reads retain the same sample ID and receipt
+time. The dashboard treats samples older than two seconds as unavailable.
 
 The API publishes and subscribes to the following standard ROS2 topics:
 
